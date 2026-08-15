@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NodePilot</title>
+  <meta name="description" content="Self-hosted Proxmox Infrastructure Dashboard">
+  <meta name="theme-color" content="#0b1226">
+  <link rel="manifest" href="manifest.json?v=2">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="NodePilot">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="style.css?v=12">
+  <script>
+    /* applica il tema prima del render per evitare il flash del tema sbagliato */
+    (function () {
+      try {
+        var prefs = JSON.parse(localStorage.getItem('hl_prefs') || '{}');
+        var theme = prefs.theme || 'system';
+        var dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('theme-dark', dark);
+        document.documentElement.classList.toggle('theme-light', !dark);
+      } catch (e) { /* ignora */ }
+    })();
+  </script>
+</head>
+<body>
+  <div class="bg">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="grid-overlay"></div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12,3.8 19.1,7.9 19.1,16.1 12,20.2 4.9,16.1 4.9,7.9" stroke-width="1.6" opacity="0.95"></polygon>
+          <g stroke-width="1.1" opacity="0.9">
+            <line x1="12" y1="12" x2="12" y2="3.8"></line>
+            <line x1="12" y1="12" x2="19.1" y2="7.9"></line>
+            <line x1="12" y1="12" x2="19.1" y2="16.1"></line>
+            <line x1="12" y1="12" x2="12" y2="20.2"></line>
+            <line x1="12" y1="12" x2="4.9" y2="16.1"></line>
+            <line x1="12" y1="12" x2="4.9" y2="7.9"></line>
+          </g>
+          <circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"></circle>
+          <g fill="currentColor" stroke="none">
+            <circle cx="12" cy="3.8" r="1"></circle>
+            <circle cx="19.1" cy="7.9" r="1"></circle>
+            <circle cx="19.1" cy="16.1" r="1"></circle>
+            <circle cx="12" cy="20.2" r="1"></circle>
+            <circle cx="4.9" cy="16.1" r="1"></circle>
+            <circle cx="4.9" cy="7.9" r="1"></circle>
+          </g>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>Node<span>Pilot</span></h1>
+        <p id="subtitle">Connessione in corso…</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <nav class="main-nav" id="mainNav">
+        <button class="nav-btn active" data-view="dashboard" data-i18n="nav.dashboard">🏠 Dashboard</button>
+        <button class="nav-btn" data-view="health" data-i18n="nav.health">🛡️ Monitoraggio</button>
+        <button class="nav-btn" data-view="backup" data-i18n="nav.backup">💾 Backup & Snapshot</button>
+        <button class="nav-btn" data-view="logs" data-i18n="nav.logs">📋 Log Proxmox</button>
+      </nav>
+      <span class="mini-status" id="miniStatus" title="Stato server" hidden></span>
+      <button class="icon-btn hamburger-btn" id="btnHamburger" title="Menu" aria-label="Menu" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+      </button>
+      <div class="clock" id="clock">
+        <span id="clockTime">--:--:--</span>
+        <span id="clockDate">—</span>
+      </div>
+      <div class="status-chip" id="connChip">
+        <span class="dot"></span>
+        <span id="connText">Connessione…</span>
+      </div>
+      <span class="offline-chip" id="offlineChip" hidden>Offline</span>
+      <button class="icon-btn" id="btnSettings" title="Impostazioni">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <span class="drawer-title" id="drawerTitle">NodePilot</span>
+      <button class="icon-btn" id="btnDrawerClose" aria-label="Chiudi">✕</button>
+    </div>
+    <nav class="drawer-nav">
+      <button class="drawer-item active" data-view="dashboard" data-i18n="nav.dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        <span>Dashboard</span>
+      </button>
+      <button class="drawer-item" data-view="health" data-i18n="nav.health">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        <span>Monitoraggio</span>
+      </button>
+      <button class="drawer-item" data-view="backup" data-i18n="nav.backup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"></path><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"></path></svg>
+        <span>Backup & Snapshot</span>
+      </button>
+      <button class="drawer-item" data-view="logs" data-i18n="nav.logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="8" y1="13" x2="16" y2="13"></line><line x1="8" y1="17" x2="16" y2="17"></line></svg>
+        <span>Log Proxmox</span>
+      </button>
+    </nav>
+    <div class="drawer-status" id="drawerStatus">
+      <span class="drawer-status-dot"></span>
+      <span id="drawerStatusText">—</span>
+    </div>
+    <nav class="drawer-nav drawer-nav-bottom">
+      <button class="drawer-item" id="btnDrawerSettings" data-i18n="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <span>Impostazioni</span>
+      </button>
+      <button class="drawer-item drawer-item-info" id="btnDrawerInfo" data-i18n="info">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+        <span>Informazioni</span>
+      </button>
+      <button class="drawer-item" id="btnDrawerLogout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+        <span>Esci</span>
+      </button>
+    </nav>
+  </aside>
+
+  <main>
+    <section class="stats-row" id="statsRow">
+      <div class="stat-card glass" id="statServers">
+        <div class="stat-icon">🖥️</div>
+        <div class="stat-info">
+          <span class="stat-value" id="statServersVal">0</span>
+          <span class="stat-label" data-i18n="stat.servers">Server</span>
+        </div>
+      </div>
+      <div class="stat-card glass" id="statVms">
+        <div class="stat-icon">💻</div>
+        <div class="stat-info">
+          <span class="stat-value" id="statVmsVal">0</span>
+          <span class="stat-label" data-i18n="stat.vms">VM attive</span>
+        </div>
+      </div>
+      <div class="stat-card glass" id="statLxc">
+        <div class="stat-icon">📦</div>
+        <div class="stat-info">
+          <span class="stat-value" id="statLxcVal">0</span>
+          <span class="stat-label" data-i18n="stat.lxc">LXC attivi</span>
+        </div>
+      </div>
+      <div class="stat-card glass" id="statCpu">
+        <div class="stat-icon">⚡</div>
+        <div class="stat-info">
+          <span class="stat-value" id="statCpuVal">0%</span>
+          <span class="stat-label" data-i18n="stat.cpu">CPU media</span>
+        </div>
+        <div class="stat-spark"><canvas id="sparkCpu"></canvas></div>
+      </div>
+      <div class="stat-card glass" id="statRam">
+        <div class="stat-icon">🧠</div>
+        <div class="stat-info">
+          <span class="stat-value" id="statRamVal">0%</span>
+          <span class="stat-label" data-i18n="stat.ram">RAM media</span>
+        </div>
+        <div class="stat-spark"><canvas id="sparkRam"></canvas></div>
+      </div>
+    </section>
+
+    <section id="serversSection" class="servers-section">
+      <div class="section-head">
+        <h2 data-i18n="section.servers">I tuoi server</h2>
+        <div class="section-actions">
+          <span class="last-update" id="lastUpdate">—</span>
+          <button class="ghost-btn add-server-btn" id="btnAddServer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            Inserisci server
+          </button>
+          <button class="auto-toggle" id="autoToggle" title="Attiva/disattiva aggiornamento automatico" aria-pressed="true">
+            <span class="auto-toggle-dot"></span>
+            <span class="auto-toggle-text" id="autoToggleText">ON</span>
+          </button>
+          <label class="auto-refresh" title="Intervallo di aggiornamento automatico">
+            <span class="auto-refresh-label">Auto:</span>
+            <span class="auto-refresh-select">
+              <select id="refreshSelect" aria-label="Aggiornamento automatico">
+                <option value="5000">5s</option>
+                <option value="10000" selected>10s</option>
+                <option value="15000">15s</option>
+                <option value="20000">20s</option>
+                <option value="30000">30s</option>
+                <option value="60000">60s</option>
+              </select>
+              <span class="auto-refresh-arrow">▾</span>
+            </span>
+          </label>
+          <button class="ghost-btn" id="btnRefresh">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
+            Aggiorna
+          </button>
+        </div>
+      </div>
+      <div id="serversGrid" class="servers-grid"></div>
+    </section>
+
+    <section id="logsSection" class="logs-section" hidden>
+      <div class="section-head">
+        <h2 data-i18n="nav.logs">Log Proxmox</h2>
+        <div class="section-actions">
+          <span class="last-update" id="logsUpdated">—</span>
+          <button class="ghost-btn" id="btnLogsRefresh">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
+            <span data-i18n="refresh">Aggiorna</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="logs-tabs glass" role="tablist" aria-label="Log Proxmox">
+        <button class="logs-tab" data-logtab="system" role="tab" data-i18n="logs.tab.system">Log di sistema</button>
+        <button class="logs-tab active" data-logtab="tasks" role="tab" data-i18n="logs.tab.tasks">Task</button>
+        <button class="logs-tab" data-logtab="cluster" role="tab" data-i18n="logs.tab.cluster">Log cluster</button>
+      </div>
+
+      <div class="logs-filters glass" id="logsFilters">
+        <label class="filter-item">
+          <span data-i18n="logs.server">Server</span>
+          <select id="logServerFilter" class="select-input">
+            <option value="all" data-i18n="logs.all">Tutti i server</option>
+          </select>
+        </label>
+        <label class="filter-item" data-logfilter="tasks" data-logfilter-status>
+          <span data-i18n="logs.status">Stato</span>
+          <select id="logStatusFilter" class="select-input">
+            <option value="all" data-i18n="logs.statusAll">Tutti</option>
+            <option value="OK" data-i18n="logs.success">Successo</option>
+            <option value="ERR" data-i18n="logs.error">Errore</option>
+            <option value="RUNNING" data-i18n="logs.running">In corso</option>
+          </select>
+        </label>
+        <label class="filter-item" data-logfilter="tasks" data-logfilter-type>
+          <span data-i18n="logs.type">Tipo</span>
+          <select id="logTypeFilter" class="select-input">
+            <option value="all" data-i18n="logs.typeAll">Tutti</option>
+            <option value="vm" data-i18n="logs.typeVm">VM</option>
+            <option value="lxc" data-i18n="logs.typeLxc">LXC</option>
+            <option value="sys" data-i18n="logs.typeSys">Sistema/altro</option>
+          </select>
+        </label>
+        <label class="filter-item" data-logfilter="system" data-logfilter-node>
+          <span data-i18n="logs.node">Nodo</span>
+          <select id="logNodeFilter" class="select-input">
+            <option value="all" data-i18n="logs.allNodes">Tutti i nodi</option>
+          </select>
+        </label>
+        <label class="filter-item" data-logfilter="cluster" data-logfilter-node>
+          <span data-i18n="logs.node">Nodo</span>
+          <select id="logClusterNodeFilter" class="select-input">
+            <option value="all" data-i18n="logs.allNodes">Tutti i nodi</option>
+          </select>
+        </label>
+        <label class="filter-item" data-logfilter="cluster" data-logfilter-severity>
+          <span data-i18n="logs.severity">Severità</span>
+          <select id="logSeverityFilter" class="select-input">
+            <option value="all" data-i18n="logs.severityAll">Tutte</option>
+            <option value="crit" data-i18n="logs.sev.crit">Critical</option>
+            <option value="err" data-i18n="logs.sev.err">Error</option>
+            <option value="warn" data-i18n="logs.sev.warn">Warning</option>
+            <option value="notice" data-i18n="logs.sev.notice">Notice</option>
+            <option value="info" data-i18n="logs.sev.info">Info</option>
+            <option value="debug" data-i18n="logs.sev.debug">Debug</option>
+          </select>
+        </label>
+        <label class="filter-item">
+          <span data-i18n="logs.period">Periodo</span>
+          <select id="logPeriodFilter" class="select-input">
+            <option value="1h" data-i18n="logs.period1h">Ultima ora</option>
+            <option value="24h" selected data-i18n="logs.period24h">Ultime 24 ore</option>
+            <option value="7d" data-i18n="logs.period7d">Ultimi 7 giorni</option>
+            <option value="30d" data-i18n="logs.period30d">Ultimi 30 giorni</option>
+          </select>
+        </label>
+        <label class="filter-item filter-search">
+          <span data-i18n="logs.search">Cerca</span>
+          <input type="text" id="logSearch" class="search-input" placeholder="VM, LXC, VMID, evento...">
+        </label>
+      </div>
+
+      <div class="logs-banner" id="logsBanner" hidden></div>
+
+      <div class="logs-errors" id="logsErrors" hidden></div>
+
+      <div class="logs-loading" id="logsLoading" hidden>
+        <span class="spinner"></span>
+        <span data-i18n="logs.loading">Caricamento...</span>
+      </div>
+
+      <div class="logs-table-wrap glass" id="logsTableWrap">
+        <table class="logs-table" id="logsTable">
+          <thead>
+            <tr>
+              <th data-logcol="time" data-i18n="logs.colTime">Ora</th>
+              <th data-logcol="server" data-i18n="logs.colServer">Server</th>
+              <th data-logcol="node" data-i18n="logs.colNode">Nodo</th>
+              <th data-logcol="type" data-i18n="logs.colType">Tipo</th>
+              <th data-logcol="resource" data-i18n="logs.colResource">Risorsa</th>
+              <th data-logcol="event" data-i18n="logs.colEvent">Evento</th>
+              <th data-logcol="status" data-i18n="logs.colStatus">Stato</th>
+              <th data-logcol="severity" data-i18n="logs.colSeverity">Severità</th>
+              <th data-logcol="service" data-i18n="logs.colService">Servizio</th>
+              <th data-logcol="message" data-i18n="logs.colMessage">Messaggio</th>
+              <th data-logcol="user" data-i18n="logs.colUser">Utente</th>
+            </tr>
+          </thead>
+          <tbody id="logsBody"></tbody>
+        </table>
+        <div class="logs-mobile" id="logsMobile"></div>
+        <div class="logs-empty" id="logsEmpty" hidden>
+          <p data-i18n="logs.empty">Nessun evento trovato</p>
+          <span data-i18n="logs.emptyHint">Non sono presenti eventi Proxmox per i filtri selezionati.</span>
+        </div>
+      </div>
+
+      <div class="logs-pagination">
+        <button class="ghost-btn" id="logsPrev" data-i18n="logs.prev">← Precedente</button>
+        <span class="logs-pageinfo" id="logsPageInfo">1 / 1</span>
+        <button class="ghost-btn" id="logsNext" data-i18n="logs.next">Successiva →</button>
+      </div>
+    </section>
+
+    <section id="healthSection" class="health-section" hidden>
+      <div class="section-head">
+        <h2 data-i18n="nav.health">🛡️ Monitoraggio</h2>
+        <div class="section-actions">
+          <span class="last-update" id="healthUpdated">—</span>
+        </div>
+      </div>
+
+      <div class="health-banner glass" id="healthBanner" role="status" aria-live="polite">
+        <div class="health-banner-icon" id="healthBannerIcon">✓</div>
+        <div class="health-banner-text">
+          <div class="health-banner-title" id="healthBannerTitle">—</div>
+          <div class="health-banner-sub" id="healthBannerSub">—</div>
+        </div>
+      </div>
+
+      <div class="health-cards" id="healthCards">
+        <div class="health-card glass" data-health-card="critical">
+          <span class="health-card-value" id="healthCardCritical">0</span>
+          <span class="health-card-label" data-i18n="health.card.critical">Critici</span>
+        </div>
+        <div class="health-card glass" data-health-card="warning">
+          <span class="health-card-value" id="healthCardWarning">0</span>
+          <span class="health-card-label" data-i18n="health.card.warning">Avvisi</span>
+        </div>
+        <div class="health-card glass" data-health-card="server">
+          <span class="health-card-value" id="healthCardServer">0 / 0</span>
+          <span class="health-card-label" data-i18n="health.card.server">Server</span>
+        </div>
+        <div class="health-card glass" data-health-card="guest">
+          <span class="health-card-value" id="healthCardGuest">0 / 0</span>
+          <span class="health-card-label" data-i18n="health.card.guest">Guest</span>
+        </div>
+      </div>
+
+      <div class="health-sub glass" id="healthAttentionSection" hidden>
+        <h3 class="health-sub-title" data-i18n="health.section.attention">Richiede attenzione</h3>
+        <div class="health-alert-list" id="healthAttentionList" role="list"></div>
+      </div>
+
+      <div class="health-sub glass" id="healthInfoSection" hidden>
+        <h3 class="health-sub-title" data-i18n="health.section.info">Informazioni recenti</h3>
+        <div class="health-alert-list" id="healthInfoList" role="list"></div>
+      </div>
+
+      <div class="health-task-note" id="healthTaskNote" hidden data-i18n="health.tasksUnavailable">Task non disponibili</div>
+
+      <div class="health-sub glass" id="healthInfraSection" hidden>
+        <h3 class="health-sub-title" data-i18n="health.section.infra">Infrastruttura</h3>
+        <div id="healthInfraList" class="health-infra-list"></div>
+      </div>
+
+      <div class="health-empty" id="healthEmpty" hidden>
+        <span class="health-empty-icon">✓</span>
+        <span data-i18n="health.empty">Nessun problema rilevato</span>
+      </div>
+    </section>
+
+    <section id="backupSection" class="backup-section" hidden>
+      <div class="section-head">
+        <h2 data-i18n="nav.backup">💾 Backup & Snapshot</h2>
+        <div class="section-actions">
+          <span class="last-update" id="backupUpdated">—</span>
+          <button type="button" id="btnBackupRefresh" class="ghost-btn"><span data-i18n="backup.refresh">Aggiorna</span></button>
+        </div>
+      </div>
+
+      <div id="backupStatus" class="backup-status" role="status" aria-live="polite" hidden></div>
+      <div id="backupErrors" class="logs-errors" hidden></div>
+
+      <div id="backupLoading" class="backup-loading" hidden>
+        <span class="spinner-ring" aria-hidden="true"></span>
+        <span data-i18n="backup.loading">Caricamento…</span>
+      </div>
+
+      <div id="backupContent" hidden>
+        <div class="health-cards">
+          <div class="health-card glass">
+            <span class="health-card-value" id="backupCardGuests">—</span>
+            <span class="health-card-label" data-i18n="backup.card.guests">Guest con backup</span>
+          </div>
+          <div class="health-card glass">
+            <span class="health-card-value" id="backupCardFailed">—</span>
+            <span class="health-card-label" data-i18n="backup.card.failed24h">Backup falliti 24h</span>
+          </div>
+          <div class="health-card glass">
+            <span class="health-card-value" id="backupCardSnapshots">—</span>
+            <span class="health-card-label" data-i18n="backup.card.snapshots">Snapshot</span>
+          </div>
+          <div class="health-card glass">
+            <span class="health-card-value" id="backupCardFree">—</span>
+            <span class="health-card-label" data-i18n="backup.card.freeSpace">Spazio backup libero</span>
+          </div>
+        </div>
+
+        <div class="backup-subs">
+          <div class="backup-sub glass" id="backupSubGuests">
+            <h3 class="health-sub-title" data-i18n="backup.section.guests">Guest / stato backup</h3>
+            <div class="backup-list" id="backupGuestList" role="list"></div>
+            <div class="backup-empty" id="backupGuestEmpty" hidden data-i18n="backup.noGuests">Nessun guest</div>
+          </div>
+
+          <div class="backup-sub glass" id="backupSubRecent">
+            <h3 class="health-sub-title" data-i18n="backup.section.recent">Backup recenti</h3>
+            <div class="backup-list" id="backupRecentList" role="list"></div>
+            <button type="button" class="ghost-btn backup-showall-btn" id="btnBackupShowAll" hidden data-i18n="backup.showAll">Mostra tutti</button>
+            <div class="backup-empty" id="backupRecentEmpty" hidden data-i18n="backup.noBackups">Nessun backup</div>
+          </div>
+
+          <div class="backup-sub glass" id="backupSubSnapshots">
+            <h3 class="health-sub-title" data-i18n="backup.section.snapshots">Snapshot</h3>
+            <div class="backup-list" id="backupSnapshotList" role="list"></div>
+            <div class="backup-empty" id="backupSnapshotEmpty" hidden data-i18n="backup.noSnapshots">Nessuno snapshot</div>
+          </div>
+
+          <div class="backup-sub glass" id="backupSubJobs">
+            <h3 class="health-sub-title" data-i18n="backup.section.jobs">Job schedulati</h3>
+            <div class="backup-list" id="backupJobList" role="list"></div>
+            <div class="backup-empty" id="backupJobEmpty" hidden data-i18n="backup.noJobs">Nessun job configurato</div>
+          </div>
+
+          <div class="backup-sub glass" id="backupSubStorage">
+            <h3 class="health-sub-title" data-i18n="backup.section.storage">Storage backup</h3>
+            <div class="backup-list" id="backupStorageList" role="list"></div>
+            <div class="backup-empty" id="backupStorageEmpty" hidden data-i18n="backup.noStorage">Nessuno storage compatibile</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts"></div>
+
+  <div class="auth-backdrop" id="authBackdrop" hidden>
+    <div class="auth-card glass" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <div class="auth-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12,3.8 19.1,7.9 19.1,16.1 12,20.2 4.9,16.1 4.9,7.9" opacity="0.95"></polygon>
+          <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle>
+          <g stroke-width="1.1" opacity="0.9">
+            <line x1="12" y1="10.4" x2="12" y2="3.8"></line>
+            <line x1="12" y1="13.6" x2="12" y2="20.2"></line>
+            <line x1="10.4" y1="12" x2="3.8" y2="12"></line>
+            <line x1="13.6" y1="12" x2="20.2" y2="12"></line>
+            <line x1="10.8" y1="10.8" x2="5.1" y2="5.1"></line>
+            <line x1="13.2" y1="13.2" x2="18.9" y2="18.9"></line>
+            <line x1="13.2" y1="10.8" x2="18.9" y2="5.1"></line>
+            <line x1="10.8" y1="13.2" x2="5.1" y2="18.9"></line>
+          </g>
+        </svg>
+      </div>
+      <h1 class="auth-title" id="authTitle">Node<span>Pilot</span></h1>
+      <p class="auth-subtitle" data-i18n="auth.subtitle">Accedi alla tua dashboard</p>
+      <form id="authForm" class="auth-form">
+        <div class="field">
+          <label for="authUsername" data-i18n="auth.username">Username</label>
+          <input type="text" id="authUsername" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="authPassword" data-i18n="auth.password">Password</label>
+          <div class="auth-password-row">
+            <input type="password" id="authPassword" autocomplete="current-password" required>
+            <button type="button" class="icon-btn auth-show-btn" id="btnAuthShow" title="Mostra password" aria-label="Mostra password">👁</button>
+          </div>
+        </div>
+        <div class="auth-error" id="authError" role="alert" aria-live="assertive" hidden></div>
+        <button type="submit" class="primary-btn auth-submit" id="authSubmit" data-i18n="auth.login">Accedi</button>
+        <button type="button" class="ghost-btn" id="authRetry" data-i18n="auth.retry" hidden>Riprova</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal glass">
+      <div class="modal-head">
+        <h2>Impostazioni</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>ASPETTO</label>
+          <div class="segmented" id="themeSegmented" role="group" aria-label="Tema">
+            <button type="button" data-theme="light" title="Chiaro">☀️ Chiaro</button>
+            <button type="button" data-theme="dark" title="Scuro">🌙 Scuro</button>
+            <button type="button" data-theme="system" title="Sistema">💻 Sistema</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>LINGUA</label>
+          <div class="toggle-row">
+            <span>Lingua dell'interfaccia</span>
+            <select id="languageSelect" class="select-input">
+              <option value="it">🇮🇹 Italiano</option>
+              <option value="en">🇬🇧 English</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Tour guidato</label>
+          <div class="toggle-row">
+            <span data-i18n="settings.tour.label">Rivedi il tour guidato</span>
+            <button type="button" class="ghost-btn" id="btnRestartTour">Riavvia tour</button>
+          </div>
+          <p class="hint" data-i18n="settings.tour.hint">Il tour mostra le funzionalità sui tuoi dati reali, senza modificare nulla.</p>
+          <span class="tour-new-badge" id="tourNewBadge" data-i18n="tour.newFeatures" hidden>Nuove funzionalità disponibili</span>
+        </div>
+
+        <div class="field">
+          <label data-i18n="auth.session">Sessione</label>
+          <div class="toggle-row">
+            <span id="sessionUser">Utente: —</span>
+            <button type="button" class="ghost-btn" id="btnLogout" data-i18n="auth.logoutBtn">Esci</button>
+          </div>
+          <p class="hint" data-i18n="session.info">Sessione: 12 ore di inattività / massimo 7 giorni</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="serverModal" hidden>
+    <div class="modal glass">
+      <div class="modal-head">
+        <h2 id="serverModalTitle">Inserisci server</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="serverForm" class="server-form">
+          <input type="text" id="fName" placeholder="Nome (es. Proxmox Casa)" required>
+          <input type="text" id="fUrl" placeholder="URL (es. https://192.168.1.10:8006)" required>
+          <input type="text" id="fUser" placeholder="Utente (es. root@pam)" autocomplete="username" required>
+          <input type="password" id="fPassword" placeholder="Password" autocomplete="current-password" required>
+          <label class="check"><input type="checkbox" id="fVerifyTls"><span id="fVerifyTlsLabel">Verifica certificato TLS</span></label>
+          <p class="hint">Lascia disattivata la verifica se il Proxmox usa un certificato self-signed (il caso tipico).</p>
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" id="btnTest">Testa connessione</button>
+            <button type="button" class="ghost-btn" data-close>Annulla</button>
+            <button type="submit" class="primary-btn" id="btnSubmitServer">Aggiungi server</button>
+          </div>
+        </form>
+        <div class="field delete-server-field" id="deleteServerField" hidden>
+          <label>Elimina server</label>
+          <button type="button" class="danger-btn" id="btnDeleteServer">Elimina server</button>
+          <p class="hint">L'eliminazione è definitiva e richiede conferma.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="confirmModal" hidden>
+    <div class="modal glass small">
+      <div class="modal-head">
+        <h2 id="confirmTitle">Conferma</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirmText">Sei sicuro?</p>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close>Annulla</button>
+          <button class="danger-btn" id="confirmOk">Conferma</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="logDetailModal" hidden>
+    <div class="modal glass">
+      <div class="modal-head">
+        <h2 data-i18n="logs.detailTitle">Dettagli evento</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="log-detail-grid" id="logDetailGrid"></div>
+        <div class="field" id="logDetailOutputField" hidden>
+          <label data-i18n="logs.output">Output task</label>
+          <pre class="log-output" id="logDetailOutput"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="infoModal" hidden>
+    <div class="modal glass small">
+      <div class="modal-head">
+        <h2 data-i18n="info.title">Informazioni</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <p data-i18n="info.body">NodePilot — Self-hosted Proxmox Infrastructure Dashboard</p>
+      </div>
+    </div>
+  </div>
+
+
+
+
+
+  <div class="guest-detail-backdrop" id="guestDetailBackdrop" aria-hidden="true">
+    <aside class="guest-detail" id="guestDetail">
+      <div class="guest-detail-head">
+        <div class="guest-detail-title-row">
+          <div class="guest-detail-icon" id="guestDetailIcon"></div>
+          <div class="guest-detail-title-col">
+            <h2 id="guestDetailTitle">Name</h2>
+            <span id="guestDetailSubtitle">LXC 100 · pve</span>
+          </div>
+          <div class="guest-detail-status-dot" id="guestDetailStatusDot"></div>
+        </div>
+        <button class="icon-btn" data-guest-detail-close>✕</button>
+      </div>
+
+      <div class="guest-detail-actions" id="guestDetailActions"></div>
+
+      <div class="guest-detail-health" id="guestDetailHealth">
+        <label for="guestHealthMode" data-i18n="health.monitoring">Monitoraggio</label>
+        <select id="guestHealthMode" aria-label="Monitoraggio">
+          <option value="manual" data-i18n="health.expected.manual">Manuale</option>
+          <option value="alwayson" data-i18n="health.expected.alwaysOn">Sempre attivo</option>
+          <option value="ignore" data-i18n="health.expected.ignore">Ignora</option>
+        </select>
+      </div>
+
+      <div class="guest-detail-tabs">
+        <button class="guest-detail-tab active" data-tab="overview" data-i18n="gd.overview">Panoramica</button>
+        <button class="guest-detail-tab" data-tab="graphs" data-i18n="gd.graphs">Grafici</button>
+        <button class="guest-detail-tab" data-tab="config" data-i18n="gd.config">Configurazione</button>
+        <button class="guest-detail-tab" data-tab="tasks" data-i18n="gd.tasks">Task</button>
+        <button class="guest-detail-tab" data-tab="backup" data-i18n="gd.backup">Backup & Snapshot</button>
+      </div>
+
+      <div class="guest-detail-content">
+        <div id="guestDetailLoading" class="guest-detail-loading hidden">
+          <div class="spinner"></div>
+          <span data-i18n="gd.loading">Caricamento in corso...</span>
+        </div>
+
+        <div id="gd-tab-overview" class="guest-detail-panel"></div>
+        <div id="gd-tab-graphs" class="guest-detail-panel hidden">
+          <div class="tf-selector" id="guestDetailTfSelector">
+            <button class="tf-btn active" data-tf="hour" data-i18n="gd.tf.hour">1h</button>
+            <button class="tf-btn" data-tf="day" data-i18n="gd.tf.day">24h</button>
+            <button class="tf-btn" data-tf="week" data-i18n="gd.tf.week">7g</button>
+            <button class="tf-btn" data-tf="month" data-i18n="gd.tf.month">30g</button>
+          </div>
+          <div class="graphs-container" id="guestDetailGraphs"></div>
+        </div>
+        <div id="gd-tab-config" class="guest-detail-panel hidden"></div>
+        <div id="gd-tab-tasks" class="guest-detail-panel hidden"></div>
+        <div id="gd-tab-backup" class="guest-detail-panel hidden">
+          <div id="gdBackupLoading" class="guest-detail-loading hidden">
+            <div class="spinner"></div>
+            <span data-i18n="backup.loading">Caricamento…</span>
+          </div>
+          <div id="gdBackupError" class="backup-status" hidden></div>
+          <div id="gdBackupBody" hidden>
+            <div id="gdBackupTask" class="gd-task-wrap" hidden></div>
+
+            <div class="gd-backup-block">
+              <div class="gd-backup-head">
+                <h3 data-i18n="backup.section.recent">Backup</h3>
+                <button type="button" class="primary-btn" id="btnGdCreateBackup" data-i18n="backup.create">Crea backup</button>
+              </div>
+              <div class="gd-backup-last" id="gdBackupLast"></div>
+              <div class="gd-backup-history" id="gdBackupHistory"></div>
+            </div>
+
+            <div class="gd-backup-block">
+              <div class="gd-backup-head">
+                <h3><span data-i18n="backup.section.snapshots">Snapshot</span> <span class="gd-count" id="gdSnapshotCount">0</span></h3>
+                <button type="button" class="primary-btn" id="btnGdCreateSnapshot" data-i18n="snapshot.create">Crea snapshot</button>
+              </div>
+              <div class="backup-list" id="gdSnapshotList" role="list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="modal-backdrop modal-backdrop--above-guest-detail" id="backupCreateModal" hidden>
+    <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="backupCreateTitle">
+      <div class="modal-head">
+        <h2 id="backupCreateTitle" data-i18n="backup.create">Crea backup</h2>
+        <button class="icon-btn" data-close aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="backupCreateForm">
+          <div class="field">
+            <label for="backupGuestField" data-i18n="backup.guest">Guest</label>
+            <input type="text" id="backupGuestField" readonly>
+          </div>
+          <div class="field">
+            <label for="backupStorageSelect" data-i18n="backup.storage">Storage</label>
+            <select id="backupStorageSelect"></select>
+            <p class="hint" id="backupStorageHint"></p>
+          </div>
+          <div class="field">
+            <label for="backupModeSelect" data-i18n="backup.mode">Modalità</label>
+            <select id="backupModeSelect">
+              <option value="snapshot" data-i18n="backup.mode.snapshot">Snapshot</option>
+              <option value="suspend" data-i18n="backup.mode.suspend">Suspend</option>
+              <option value="stop" data-i18n="backup.mode.stop">Stop</option>
+            </select>
+            <p class="hint" id="backupModeHint"></p>
+          </div>
+          <div class="field">
+            <label for="backupCompressSelect" data-i18n="backup.compress">Compressione</label>
+            <select id="backupCompressSelect">
+              <option value="zstd">Zstandard (zstd)</option>
+              <option value="gzip">gzip</option>
+              <option value="lzo">lzo</option>
+              <option value="none" data-i18n="backup.compress.none">Nessuna</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="backupNotesInput" data-i18n="backup.notes">Note</label>
+            <textarea id="backupNotesInput" rows="2" maxlength="256"></textarea>
+            <p class="hint" id="backupNotesCount">0/256</p>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="backupProtectedCheck">
+            <span data-i18n="backup.protectedLabel">Proteggi da eliminazione/pruning</span>
+          </label>
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" data-close data-i18n="backup.cancel">Annulla</button>
+            <button type="button" class="primary-btn" id="btnBackupNext" data-i18n="backup.confirmBtn">Crea backup</button>
+          </div>
+        </div>
+        <div id="backupCreateReview" hidden>
+          <div class="backup-review" id="backupReviewBox"></div>
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" id="btnBackupBack" data-i18n="backup.back">Indietro</button>
+            <button type="button" class="primary-btn" id="btnBackupConfirm" data-i18n="backup.confirm">Conferma</button>
+          </div>
+        </div>
+        <div id="backupCreateError" class="backup-status" role="alert" hidden></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop modal-backdrop--above-guest-detail" id="snapshotCreateModal" hidden>
+    <div class="modal glass" role="dialog" aria-modal="true" aria-labelledby="snapshotCreateTitle">
+      <div class="modal-head">
+        <h2 id="snapshotCreateTitle" data-i18n="snapshot.create">Crea snapshot</h2>
+        <button class="icon-btn" data-close aria-label="Chiudi">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label for="snapshotGuestField" data-i18n="backup.guest">Guest</label>
+          <input type="text" id="snapshotGuestField" readonly>
+        </div>
+        <div class="field">
+          <label for="snapshotNameInput" data-i18n="snapshot.name">Nome snapshot</label>
+          <input type="text" id="snapshotNameInput" maxlength="40" autocomplete="off">
+          <p class="hint" id="snapshotNameHint" data-i18n="snapshot.nameHint">Massimo 40 caratteri: inizia con lettera o numero, poi lettere, numeri, "_" o "-"</p>
+        </div>
+        <div class="field">
+          <label for="snapshotDescInput" data-i18n="snapshot.description">Descrizione</label>
+          <textarea id="snapshotDescInput" rows="2" maxlength="256"></textarea>
+        </div>
+        <label class="check" id="snapshotVmstateRow" hidden>
+          <input type="checkbox" id="snapshotVmstateCheck">
+          <span data-i18n="snapshot.ramLabel">Includi stato RAM</span>
+        </label>
+        <div class="form-actions">
+          <button type="button" class="ghost-btn" data-close data-i18n="backup.cancel">Annulla</button>
+          <button type="button" class="primary-btn" id="btnSnapshotCreate" data-i18n="snapshot.create">Crea snapshot</button>
+        </div>
+        <div id="snapshotCreateError" class="backup-status" role="alert" hidden></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop shell-backdrop" id="shellModal" hidden>
+    <div class="modal glass shell-modal">
+      <div class="modal-head shell-head">
+        <h2 id="shellTitle">>_ Shell</h2>
+        <div class="shell-head-actions">
+          <button class="icon-btn" id="btnShellFullscreen" title="Espandi">⛶</button>
+          <button class="icon-btn" data-close>✕</button>
+        </div>
+      </div>
+      <div class="shell-body">
+        <div class="shell-status" id="shellStatus">
+          <span id="shellStatusText"></span>
+          <button type="button" class="ghost-btn shell-reconnect" id="btnShellReconnect" hidden data-i18n="shell.reconnect">Riconnetti</button>
+        </div>
+        <div id="shellTerminal" class="shell-terminal"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tour-backdrop" id="tourBackdrop" hidden>
+    <div class="tour-spotlight" id="tourSpotlight"></div>
+    <div class="tour-card glass" id="tourCard">
+      <div class="tour-progress"><span id="tourStepNum">1</span> / <span id="tourStepTotal">8</span></div>
+      <div class="tour-title" id="tourTitle"></div>
+      <div class="tour-text" id="tourText"></div>
+      <div class="tour-actions">
+        <button class="ghost-btn" id="tourSkip">Salta tour</button>
+        <button class="ghost-btn" id="tourPrev" hidden>← Indietro</button>
+        <button class="primary-btn" id="tourNext">Avanti →</button>
+      </div>
+    </div>
+  </div>
+
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <script src="i18n.js?v=15"></script>
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/xterm-addon-fit.js"></script>
+  <script src="app.js?v=22"></script>
+</body>
+</html>

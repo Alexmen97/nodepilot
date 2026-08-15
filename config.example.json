@@ -1,0 +1,21 @@
+{
+  "refreshMs": 10000,
+  "autoRefreshEnabled": true,
+  "theme": "system",
+  "language": "it",
+  "servers": [
+    {
+      "id": "pve-main",
+      "name": "Proxmox Principale",
+      "url": "https://192.168.1.10:8006",
+      "user": "root@pam",
+      "password": "LA_TUA_PASSWORD",
+      "verifyTls": false
+    }
+  ],
+  "health": {
+    "guestModes": {
+      "pve-main:nodo1:qemu:100": "alwayson"
+    }
+  }
+}

@@ -1,0 +1,1525 @@
+'use strict';
+
+const http = require('http');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PORT = Number(process.env.PORT || 3100);
+const CONFIG_PATH = path.join(__dirname, 'config.json');
+const STATE_PATH = path.join(__dirname, 'state.json');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+let config = { servers: [], refreshMs: 10000, autoRefreshEnabled: true, theme: 'system', language: 'it', health: { guestModes: {} } };
+let state = { tourCompleted: false, tourCompletedVersion: 0 };
+let statusCache = null;
+let statusCacheAt = 0;
+
+/* ---------------- config ---------------- */
+
+function loadConfig() {
+  try {
+    if (fs.existsSync(CONFIG_PATH)) {
+      const c = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      config = { ...config, ...c };
+      if (!Array.isArray(config.servers)) config.servers = [];
+    }
+  } catch (e) {
+    console.error('Errore lettura config.json:', e.message);
+  }
+}
+
+function saveConfig() {
+  const clean = {
+    ...config,
+    servers: config.servers.map((s) => {
+      const { _session, ...rest } = s;
+      return rest;
+    }),
+  };
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(clean, null, 2));
+}
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_PATH)) {
+      state = { ...state, ...JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) };
+    }
+  } catch (e) {
+    console.error('Errore lettura state.json:', e.message);
+  }
+}
+
+function saveState() {
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+/* ---------------- authentication core (Fase 1: senza enforcement, arriva in F3) ---------------- */
+
+const AUTH_PATH = path.join(__dirname, 'auth.json');
+const SESSION_COOKIE = 'hl_session';
+const SESSION_IDLE_MS = 12 * 60 * 60 * 1000;        /* idle sliding */
+const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000; /* lifetime assoluto */
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_MAX_FAILS = 5;
+const SCRYPT_N = 32768;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_KEYLEN = 32;
+const SCRYPT_MAXMEM = 64 * 1024 * 1024; /* N=32768, r=8 richiede ~32MiB + overhead */
+
+let authConfig = { username: 'admin', passwordHash: null };
+const sessions = new Map();      /* sessionId -> { username, createdAt, lastSeen } */
+const loginFailures = new Map(); /* ip -> { count, resetAt } */
+
+function loadAuth() {
+  try {
+    if (fs.existsSync(AUTH_PATH)) {
+      const a = JSON.parse(fs.readFileSync(AUTH_PATH, 'utf8'));
+      authConfig = { ...authConfig, ...a };
+    }
+  } catch (e) {
+    console.error('Errore lettura auth.json:', e.message);
+  }
+}
+
+function verifyPassword(password, stored) {
+  try {
+    const parts = String(stored).split('$');
+    if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+    const N = Number(parts[1]);
+    const r = Number(parts[2]);
+    const p = Number(parts[3]);
+    const salt = Buffer.from(parts[4], 'base64url');
+    const expected = Buffer.from(parts[5], 'base64url');
+    const actual = crypto.scryptSync(password, salt, expected.length, { N, r, p, maxmem: SCRYPT_MAXMEM });
+    return crypto.timingSafeEqual(actual, expected);
+  } catch (_) {
+    return false;
+  }
+}
+
+function parseCookies(req) {
+  const out = {};
+  const header = req.headers.cookie;
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return out;
+}
+
+/* sessione valida o null; scadenza sliding + assoluta; cleanup pigro (zero timer) */
+function getSession(req) {
+  const sid = parseCookies(req)[SESSION_COOKIE];
+  if (!sid) return null;
+  const s = sessions.get(sid);
+  if (!s) return null;
+  const now = Date.now();
+  if (now - s.createdAt > SESSION_ABSOLUTE_MS || now - s.lastSeen > SESSION_IDLE_MS) {
+    sessions.delete(sid);
+    return null;
+  }
+  s.lastSeen = now;
+  return s;
+}
+
+/* guard centralizzata per l'enforcement (F3): oggi usata dai soli endpoint auth */
+function requireAuth(req) {
+  return getSession(req);
+}
+
+/* IP solo dal socket (nessun trust di x-forwarded-for: nessun reverse proxy configurato) */
+function clientIp(req) {
+  const raw = req.socket.remoteAddress || '';
+  return raw.replace(/^::ffff:/, '');
+}
+
+/* ---------------- security headers (Fase 2: hardening V1.1) ---------------- */
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'sha256-t4Ytnyfe7eBYYZtUNH2sbDx72gFeXygp9krTP+beGRE='; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
+};
+
+function securityHeaders() {
+  return Object.assign({}, SECURITY_HEADERS);
+}
+
+/* versione raw per le risposte scritte direttamente sul socket (handshake WebSocket) */
+function rawSecurityHeaders() {
+  return 'X-Content-Type-Options: nosniff\r\n' +
+    'X-Frame-Options: SAMEORIGIN\r\n' +
+    'Referrer-Policy: strict-origin-when-cross-origin\r\n' +
+    'Content-Security-Policy: ' + SECURITY_HEADERS['Content-Security-Policy'] + '\r\n';
+}
+
+/* Origin validation: il chiamante passa Origin o (fallback) Referer.
+   Confronto host:port con l'header Host; client senza entrambi gli header restano ammessi. */
+function isSameOriginHeader(value, req) {
+  try {
+    const u = new URL(value);
+    const host = String(req.headers.host || '').toLowerCase();
+    return u.host.toLowerCase() === host;
+  } catch (e) {
+    return false;
+  }
+}
+
+function cookieFlags(req) {
+  let flags = 'HttpOnly; SameSite=Lax; Path=/; Max-Age=' + Math.floor(SESSION_ABSOLUTE_MS / 1000);
+  if (req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https') flags += '; Secure';
+  return flags;
+}
+
+function setSessionCookie(res, req, sessionId) {
+  res.setHeader('Set-Cookie', SESSION_COOKIE + '=' + sessionId + '; ' + cookieFlags(req));
+}
+
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', SESSION_COOKIE + '=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+}
+
+/* log minimale: MAI password, hash, cookie o session id */
+function authLog(msg) {
+  console.log('[auth]', new Date().toISOString(), msg);
+}
+
+function rateLimitInfo(ip) {
+  const now = Date.now();
+  const entry = loginFailures.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    if (entry) loginFailures.delete(ip);
+    return { allowed: true, remaining: RATE_MAX_FAILS, retryAfter: 0 };
+  }
+  if (entry.count >= RATE_MAX_FAILS) {
+    return { allowed: false, remaining: 0, retryAfter: Math.ceil((entry.resetAt - now) / 1000) };
+  }
+  return { allowed: true, remaining: RATE_MAX_FAILS - entry.count, retryAfter: 0 };
+}
+
+function rateLimitHit(ip) {
+  const now = Date.now();
+  const entry = loginFailures.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    loginFailures.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+  } else {
+    entry.count += 1;
+    entry.resetAt = now + RATE_WINDOW_MS;
+  }
+}
+
+/* ---------------- client Proxmox (login user/password, niente token API) ---------------- */
+
+function apiRequest(server, method, apiPath, body) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(server.url.replace(/\/+$/, '') + apiPath);
+    } catch (e) {
+      return reject(new Error('URL del server non valido'));
+    }
+    const lib = url.protocol === 'https:' ? https : http;
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    };
+    let encodedBody = null;
+    if (body) {
+      encodedBody = new URLSearchParams(body).toString();
+      headers['Content-Length'] = Buffer.byteLength(encodedBody);
+    }
+    if (server._session) {
+      headers.Cookie = 'PVEAuthCookie=' + server._session.ticket;
+      if (method !== 'GET') headers.CSRFPreventionToken = server._session.csrf;
+    }
+    const options = {
+      method,
+      headers,
+      rejectUnauthorized: server.verifyTls !== false,
+    };
+    const req = lib.request(url, options, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        let parsed = null;
+        try { parsed = JSON.parse(data); } catch { parsed = { data }; }
+        resolve({ status: res.statusCode, body: parsed });
+      });
+    });
+    req.on('error', (e) => {
+      const code = e.code || '';
+      let msg = e.message;
+      if (code === 'ECONNREFUSED') msg = 'Connessione rifiutata: controlla IP e porta (es. https://IP:8006)';
+      else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') msg = 'Host non trovato: controlla l\'indirizzo IP';
+      else if (code === 'ETIMEDOUT') msg = 'Timeout: il server non risponde, controlla IP e porta';
+      else if (code === 'EHOSTUNREACH') msg = 'Host non raggiungibile: controlla la rete';
+      else if (!msg) msg = 'Errore di rete (' + (code || 'sconosciuto') + ')';
+      const err = new Error(msg);
+      err.code = code;
+      reject(err);
+    });
+    req.setTimeout(15000, () => req.destroy(new Error('Timeout di rete')));
+    if (encodedBody) req.write(encodedBody);
+    req.end();
+  });
+}
+
+async function login(server) {
+  const res = await apiRequest(server, 'POST', '/api2/json/access/ticket', {
+    username: server.user,
+    password: server.password,
+  });
+  if (res.status >= 400 || !res.body || !res.body.data || !res.body.data.ticket) {
+    const raw = typeof res.body === 'object' && res.body.data !== undefined
+      ? JSON.stringify(res.body).slice(0, 200)
+      : String(res.body || '').slice(0, 200);
+    const pveMsg = res.body && res.body.message;
+    let detail;
+    if (pveMsg) {
+      detail = pveMsg;
+    } else if (res.status === 200 && res.body && res.body.data === null) {
+      detail = 'credenziali errate: utente o password non validi. Controlla il formato utente (es. root@pam o nome@pve) e che la 2FA non sia attiva';
+    } else if (res.status === 401 || res.status === 403) {
+      detail = 'autenticazione rifiutata (HTTP ' + res.status + ')';
+    } else if (res.status >= 500) {
+      detail = 'errore del server Proxmox (HTTP ' + res.status + ')';
+    } else if (res.status === 404) {
+      detail = 'API non trovata (HTTP 404): controlla che l\'URL includa la porta corretta (es. https://IP:8006)';
+    } else if (res.status === 0 || !res.status) {
+      detail = 'nessuna risposta dal server';
+    } else {
+      detail = 'risposta inattesa (HTTP ' + res.status + '): ' + raw;
+    }
+    throw new Error('Login fallito: ' + detail);
+  }
+  server._session = {
+    ticket: res.body.data.ticket,
+    csrf: res.body.data.CSRFPreventionToken,
+    expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+  };
+  return server._session;
+}
+
+async function api(server, method, apiPath, body) {
+  if (!server._session || Date.now() > server._session.expiresAt) await login(server);
+  let res = await apiRequest(server, method, apiPath, body);
+  if (res.status === 401) {
+    await login(server);
+    res = await apiRequest(server, method, apiPath, body);
+  }
+  if (res.status >= 400) {
+    const err = new Error((res.body && res.body.message) || ('Errore ' + res.status));
+    err.pveStatus = res.status;
+    throw err;
+  }
+  return res.body ? res.body.data : null;
+}
+
+/* ---------------- raccolta stato ---------------- */
+
+/* ultimo campione di rete per ogni guest: { serverId:node:type:vmid -> { netin, netout, at } } */
+const netSamples = new Map();
+
+function pickGuest(st) {
+  return {
+    status: st.status || 'unknown',
+    cpu: st.cpu || 0,
+    cpus: st.cpus || 1,
+    mem: st.mem || 0,
+    maxmem: st.maxmem || 0,
+    /* metrica guest affidabile solo con QEMU Guest Agent; null se assente.
+       Pass-through additivo: nessuna nuova chiamata PVE. */
+    free_mem: Number.isFinite(Number(st.free_mem)) ? Number(st.free_mem) : null,
+    balloon: Number.isFinite(Number(st.balloon)) ? Number(st.balloon) : null,
+    maxballoon: Number.isFinite(Number(st.maxballoon)) ? Number(st.maxballoon) : null,
+    disk: st.disk || 0,
+    maxdisk: st.maxdisk || 0,
+    netin: st.netin || 0,
+    netout: st.netout || 0,
+    uptime: st.uptime || 0,
+  };
+}
+
+/* calcola la velocità di rete (byte/s) come differenza tra due campioni
+   divisa per il tempo trascorso: i campi netin/netout di Proxmox sono
+   contatori cumulativi di byte, NON velocità istantanee. */
+function netRate(key, netin, netout, now) {
+  const prev = netSamples.get(key);
+  netSamples.set(key, { netin, netout, at: now });
+  if (!prev || prev.at >= now) return { in: 0, out: 0 };
+  const dt = (now - prev.at) / 1000;
+  if (dt <= 0) return { in: 0, out: 0 };
+  return {
+    in: Math.max(0, (netin - prev.netin) / dt),
+    out: Math.max(0, (netout - prev.netout) / dt),
+  };
+}
+
+async function collectServer(server) {
+  const nodes = await api(server, 'GET', '/api2/json/nodes');
+  const out = { id: server.id, name: server.name, url: server.url, online: true, nodes: [] };
+  for (const n of nodes) {
+    const nodeName = encodeURIComponent(n.node);
+    const [qemu, lxc, nodeStatus] = await Promise.all([
+      api(server, 'GET', '/api2/json/nodes/' + nodeName + '/qemu'),
+      api(server, 'GET', '/api2/json/nodes/' + nodeName + '/lxc'),
+      api(server, 'GET', '/api2/json/nodes/' + nodeName + '/status'),
+    ]);
+    const vms = [];
+    for (const vm of qemu || []) {
+      try {
+        const st = await api(server, 'GET', '/api2/json/nodes/' + nodeName + '/qemu/' + vm.vmid + '/status/current');
+        if (process.env.DEBUG_PVE) {
+          console.log('[pve-debug]', new Date().toISOString(), server.id, n.node, 'qemu', vm.vmid, 'ricevuto:', st.status, 'normalizzato:', pickGuest(st).status);
+        }
+        const g = pickGuest(st);
+        const key = server.id + ':' + n.node + ':qemu:' + vm.vmid;
+        const rate = netRate(key, g.netin, g.netout, Date.now());
+        g.netin = rate.in;
+        g.netout = rate.out;
+        vms.push({ id: vm.vmid, name: vm.name || ('VM ' + vm.vmid), type: 'qemu', ...g });
+      } catch (e) {
+        if (process.env.DEBUG_PVE) {
+          console.log('[pve-debug]', new Date().toISOString(), server.id, n.node, 'qemu', vm.vmid, 'ERRORE:', e.message);
+        }
+        vms.push({ id: vm.vmid, name: vm.name || ('VM ' + vm.vmid), type: 'qemu', status: 'error', error: e.message });
+      }
+    }
+    const cts = [];
+    for (const c of lxc || []) {
+      try {
+        const st = await api(server, 'GET', '/api2/json/nodes/' + nodeName + '/lxc/' + c.vmid + '/status/current');
+        if (process.env.DEBUG_PVE) {
+          console.log('[pve-debug]', new Date().toISOString(), server.id, n.node, 'lxc', c.vmid, 'ricevuto:', st.status, 'normalizzato:', pickGuest(st).status);
+        }
+        const g = pickGuest(st);
+        const key = server.id + ':' + n.node + ':lxc:' + c.vmid;
+        const rate = netRate(key, g.netin, g.netout, Date.now());
+        g.netin = rate.in;
+        g.netout = rate.out;
+        cts.push({ id: c.vmid, name: c.name || ('CT ' + c.vmid), type: 'lxc', ...g });
+      } catch (e) {
+        if (process.env.DEBUG_PVE) {
+          console.log('[pve-debug]', new Date().toISOString(), server.id, n.node, 'lxc', c.vmid, 'ERRORE:', e.message);
+        }
+        cts.push({ id: c.vmid, name: c.name || ('CT ' + c.vmid), type: 'lxc', status: 'error', error: e.message });
+      }
+    }
+    out.nodes.push({
+      name: n.node,
+      /* online/offline reale dal campo status della lista GET /nodes (già eseguita);
+         /nodes/{node}/status non espone lo stato del nodo. */
+      status: n.status === 'online' || n.status === 'offline' ? n.status : 'unknown',
+      uptime: nodeStatus.uptime || 0,
+      cpu: nodeStatus.cpu || 0,
+      /* dati CPU reali dal nodo: /nodes/{node}/status non espone maxcpu,
+         ma cpuinfo contiene model, sockets, cores e cpus (logical/threads) */
+      cpuinfo: {
+        model: (nodeStatus.cpuinfo && nodeStatus.cpuinfo.model) || null,
+        sockets: (nodeStatus.cpuinfo && nodeStatus.cpuinfo.sockets) || null,
+        cores: (nodeStatus.cpuinfo && nodeStatus.cpuinfo.cores) || null,
+        cpus: (nodeStatus.cpuinfo && nodeStatus.cpuinfo.cpus) || null,
+      },
+      maxcpu: nodeStatus.maxcpu || (nodeStatus.cpuinfo && nodeStatus.cpuinfo.cpus) || 1,
+      mem: nodeStatus.mem || (nodeStatus.memory && nodeStatus.memory.used) || 0,
+      maxmem: nodeStatus.maxmem || (nodeStatus.memory && nodeStatus.memory.total) || 0,
+      /* rootfs del nodo dalla stessa chiamata /nodes/{node}/status; null se assente. */
+      rootfs: (nodeStatus.rootfs && Number.isFinite(Number(nodeStatus.rootfs.total)) && Number.isFinite(Number(nodeStatus.rootfs.used)) && Number.isFinite(Number(nodeStatus.rootfs.avail)))
+        ? { total: Number(nodeStatus.rootfs.total), used: Number(nodeStatus.rootfs.used), avail: Number(nodeStatus.rootfs.avail) }
+        : null,
+      vms,
+      lxc: cts,
+    });
+  }
+  return out;
+}
+
+let statusFetching = null;
+
+async function getStatus() {
+  if (statusCache && Date.now() - statusCacheAt < 2000) return statusCache;
+  /* mutex: se una raccolta è già in corso, riusa la stessa promessa
+     invece di lanciare richieste concorrenti che possono finire fuori ordine */
+  if (statusFetching) return statusFetching;
+  statusFetching = (async () => {
+    const results = await Promise.all(config.servers.map(async (s) => {
+      try {
+        return await collectServer(s);
+      } catch (e) {
+        return { id: s.id, name: s.name, url: s.url, online: false, error: e.message, nodes: [] };
+      }
+    }));
+    statusCache = { servers: results, at: Date.now() };
+    statusCacheAt = Date.now();
+    return statusCache;
+  })().finally(() => {
+    statusFetching = null;
+  });
+  return statusFetching;
+}
+
+
+/* ---------------- HTTP ---------------- */
+
+function json(res, data, code) {
+  const body = JSON.stringify(data);
+  res.writeHead(code || 200, { ...securityHeaders(),
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (c) => {
+      data += c;
+      if (data.length > 1e6) req.destroy(new Error('Body troppo grande'));
+    });
+    req.on('end', () => {
+      try { resolve(data ? JSON.parse(data) : {}); } catch { reject(new Error('JSON non valido')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+};
+
+function serveStatic(req, res, p) {
+  let filePath = path.normalize(path.join(PUBLIC_DIR, p === '/' ? 'index.html' : p));
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    res.writeHead(403, securityHeaders());
+    return res.end('Forbidden');
+  }
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404, securityHeaders());
+      return res.end('Not found');
+    }
+    res.writeHead(200, { ...securityHeaders(),
+      'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+    });
+    res.end(data);
+  });
+}
+
+function sanitizeServer(s) {
+  return { id: s.id, name: s.name, url: s.url, user: s.user, verifyTls: s.verifyTls !== false };
+}
+
+/* Health prefs: guestModes è una mappa opzionale "<serverId>:<node>:<type>:<vmid>" -> mode.
+   Config legacy senza health/guestModes -> oggetto vuoto. Nessuna scrittura automatica. */
+function safeGuestModes() {
+  const h = config.health && typeof config.health === 'object' ? config.health : {};
+  const m = h.guestModes && typeof h.guestModes === 'object' && !Array.isArray(h.guestModes) ? h.guestModes : {};
+  return m;
+}
+
+/* ---------- Backup & Snapshot Manager (Fase 1: SOLO lettura) ---------- */
+
+/* content PVE puo' essere stringa CSV ("backup,vztmpl,iso") o lista:
+   normalizzazione robusta, sempre array di stringhe. */
+function storageContentList(content) {
+  if (Array.isArray(content)) return content.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof content === 'string') return content.split(',').map((x) => x.trim()).filter(Boolean);
+  return [];
+}
+
+/* flag PVE booleani espressi come 0/1, "0"/"1" o true/false */
+function pveFlag(v) {
+  return v === true || v === 1 || v === '1';
+}
+
+/* stringa opzionale: assente o vuota -> null, altrimenti stringa invariata */
+function pveString(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v);
+  return s === '' ? null : s;
+}
+
+/* numero reale PVE (byte/epoch): mantiene il valore numerico, null se assente */
+function pveNumber(v) {
+  return Number.isFinite(Number(v)) ? Number(v) : null;
+}
+
+/* niente caratteri di controllo (U+0000-U+001F, U+007F) ne' backslash */
+function hasControlOrBackslash(v) {
+  for (const ch of v) {
+    const c = ch.codePointAt(0);
+    if (c < 32 || c === 127 || ch === '\\') return true;
+  }
+  return false;
+}
+
+/* scoperta destinazioni backup di un server: GET /nodes/{node}/storage per ogni
+   nodo, filtrando enabled + active + content include "backup".
+   Dedup multi-node: uno storage SHARED con lo stesso nome su piu' nodi genera
+   UNA entry (il nodo primario resta in "node" per le operazioni, l'elenco
+   completo dei nodi in "nodes"); uno storage node-local mantiene la propria
+   entry per nodo. Nessuna ambiguita: nessun nodo viene scartato. */
+async function backupStorageTargets(server) {
+  const nodes = await api(server, 'GET', '/api2/json/nodes');
+  const results = await Promise.allSettled((nodes || []).map(async (n) => {
+    const list = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(n.node) + '/storage');
+    return { node: n.node, list: list || [] };
+  }));
+  const errors = [];
+  const entries = new Map();
+  const nodeSets = new Map();
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      errors.push({ serverId: server.id, serverName: server.name, error: r.reason.message });
+      continue;
+    }
+    for (const raw of r.value.list || []) {
+      const content = storageContentList(raw.content);
+      const shared = pveFlag(raw.shared);
+      if (!pveFlag(raw.enabled) || !pveFlag(raw.active) || !content.includes('backup')) continue;
+      /* shared: chiave per nome (dedup tra nodi); node-local: chiave nome@nodo */
+      const key = shared ? raw.storage : raw.storage + '@' + r.value.node;
+      if (!entries.has(key)) {
+        entries.set(key, {
+          serverId: server.id,
+          serverName: server.name,
+          node: r.value.node,
+          storage: raw.storage,
+          type: pveString(raw.type),
+          shared,
+          enabled: true,
+          active: true,
+          avail: pveNumber(raw.avail) || 0,
+          used: pveNumber(raw.used) || 0,
+          total: pveNumber(raw.total) || 0,
+          content,
+        });
+        nodeSets.set(key, [r.value.node]);
+      } else if (!nodeSets.get(key).includes(r.value.node)) {
+        nodeSets.get(key).push(r.value.node);
+      }
+    }
+  }
+  const storages = [];
+  for (const [key, entry] of entries) {
+    const list = nodeSets.get(key) || [];
+    if (list.length > 1) entry.nodes = list.slice().sort();
+    storages.push(entry);
+  }
+  return { storages, errors };
+}
+
+/* stesso criterio di validazione nodo usato da /api/health/prefs (Fase 1) */
+function isValidNodeName(v) {
+  return typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(v);
+}
+
+/* mapping compress NodePilot -> PVE verificato sul sorgente ufficiale
+   (PVE/VZDump.pm, compressor_info): 0 = nessuna compressione, 1 = alias lzo. */
+const PVE_COMPRESS = { zstd: 'zstd', gzip: 'gzip', lzo: 'lzo', none: '0' };
+
+/* verifica READ-ONLY che un guest esista sul nodo indicato. VMID e' univoco per
+   nodo tra qemu e lxc (nessuna collisione possibile): il controllo non e'
+   ambiguo. 403 PVE e altri errori reali vengono propagati; il solo caso
+   "does not exist" (HTTP 500 con messaggio specifico, verificato su PVE 9.2)
+   viene trattato come guest assente. */
+async function guestExists(server, node, vmid) {
+  const nodeName = encodeURIComponent(node);
+  for (const type of ['qemu', 'lxc']) {
+    try {
+      await api(server, 'GET', '/api2/json/nodes/' + nodeName + '/' + type + '/' + vmid + '/status/current');
+      return true;
+    } catch (e) {
+      if (e.pveStatus === 403) throw e;
+      if (!/does not exist/i.test(e.message)) throw e;
+    }
+  }
+  return false;
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const p = url.pathname;
+  const q = url.searchParams;
+  /* Fase 3: enforcement autenticazione — tutti gli endpoint /api richiedono una
+     sessione valida, tranne login/session/logout. Gli statici restano pubblici
+     (la shell di login non contiene dati). */
+  if (p.startsWith('/api/') && p !== '/api/auth/login' && p !== '/api/auth/session' && p !== '/api/auth/logout') {
+    if (!requireAuth(req)) {
+      return json(res, { ok: false, authenticated: false, error: 'Non autenticato' }, 401);
+    }
+  }
+  /* Fase 2: Origin validation sulle richieste mutative autenticate.
+     Esclusi GET e gli endpoint pubblici di autenticazione (login/session/logout),
+     che hanno già rate limit e protezioni dedicate. Client senza Origin né Referer
+     (es. curl) restano ammessi. */
+  if ((req.method === 'POST' || req.method === 'DELETE') &&
+      p.startsWith('/api/') &&
+      p !== '/api/auth/login' && p !== '/api/auth/session' && p !== '/api/auth/logout') {
+    const originCandidate = req.headers.origin || req.headers.referer;
+    if (originCandidate && !isSameOriginHeader(originCandidate, req)) {
+      return json(res, { ok: false, error: 'Origine non valida' }, 403);
+    }
+  }
+  try {
+    /* ---------- authentication (Fase 1: core; enforcement sugli altri endpoint in F3) ---------- */
+
+    if (p === '/api/auth/login' && req.method === 'POST') {
+      const ip = clientIp(req);
+      const limit = rateLimitInfo(ip);
+      if (!limit.allowed) {
+        authLog('rate limit: ip=' + ip);
+        res.setHeader('Retry-After', String(limit.retryAfter));
+        return json(res, { ok: false, error: 'Troppi tentativi. Riprova più tardi.' }, 429);
+      }
+      const b = await readBody(req);
+      const username = typeof b.username === 'string' ? b.username.trim() : '';
+      const password = typeof b.password === 'string' ? b.password : '';
+      if (!authConfig.username || !authConfig.passwordHash) {
+        return json(res, { ok: false, error: 'Autenticazione non configurata: eseguire npm run auth:set-password' }, 503);
+      }
+      let ok = false;
+      if (username === authConfig.username && password) {
+        ok = verifyPassword(password, authConfig.passwordHash);
+      } else {
+        /* confronto dummy per uniformare i tempi (no user enumeration) */
+        crypto.scryptSync(password || '', crypto.randomBytes(16), SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM });
+      }
+      if (!ok) {
+        rateLimitHit(ip);
+        authLog('login fallito: ip=' + ip);
+        return json(res, { ok: false, error: 'Credenziali non valide' }, 401);
+      }
+      loginFailures.delete(ip);
+      /* rotazione session id a ogni login: niente session fixation */
+      const sessionId = crypto.randomBytes(32).toString('base64url');
+      sessions.set(sessionId, { username, createdAt: Date.now(), lastSeen: Date.now() });
+      setSessionCookie(res, req, sessionId);
+      authLog('login riuscito: user=' + username);
+      return json(res, { ok: true, user: { username } });
+    }
+
+    if (p === '/api/auth/logout' && req.method === 'POST') {
+      const sid = parseCookies(req)[SESSION_COOKIE];
+      const s = sid ? sessions.get(sid) : null;
+      if (s) {
+        sessions.delete(sid);
+        authLog('logout: user=' + s.username);
+      }
+      clearSessionCookie(res);
+      return json(res, { ok: true });
+    }
+
+    if (p === '/api/auth/session' && req.method === 'GET') {
+      const s = getSession(req);
+      if (!s) return json(res, { ok: true, authenticated: false });
+      return json(res, { ok: true, authenticated: true, user: { username: s.username } });
+    }
+
+    if (p === '/api/status') return json(res, await getStatus());
+
+    /* ---------- log Proxmox: task / system / cluster ---------- */
+
+    /* helper: normalizza un task Proxmox (campi reali di /nodes/{node}/tasks) */
+    function normalizeTask(s, n, t) {
+      return {
+        serverId: s.id,
+        serverName: s.name,
+        node: t.node || n.node,
+        upid: t.upid,
+        type: t.type || 'unknown',
+        status: t.status || 'unknown',
+        vmid: t.id || null,
+        user: t.user || '',
+        starttime: t.starttime || 0,
+        endtime: t.endtime || 0,
+        pid: t.pid || null,
+      };
+    }
+
+    /* helper: parsing affidabile di una riga syslog "Mmm dd HH:MM:SS host servizio: msg".
+       Le righe non conformi (es. continuazioni kernel) restano con ts=0 e testo originale. */
+    function parseSyslogLine(t) {
+      const m = /^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\S+)\s+([^:]+):\s?(.*)$/.exec(t || '');
+      if (!m) return { ts: 0, service: '', message: t || '' };
+      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+      const mon = months[m[1]];
+      if (mon === undefined) return { ts: 0, service: '', message: t || '' };
+      const now = new Date();
+      let d = new Date(now.getFullYear(), mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+      if (d.getTime() > Date.now() + 86400000) {
+        d = new Date(now.getFullYear() - 1, mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+      }
+      return { ts: Math.floor(d.getTime() / 1000), service: m[7], message: m[8] };
+    }
+
+    /* helper: esegue una GET su tutti i server target e raccoglie errori per server */
+    async function fetchAllServers(serverId, fn) {
+      const targets = serverId
+        ? config.servers.filter((s) => s.id === serverId)
+        : config.servers;
+      const results = await Promise.all(targets.map(async (s) => {
+        try {
+          return { serverId: s.id, serverName: s.name, ok: true, data: await fn(s) };
+        } catch (e) {
+          return { serverId: s.id, serverName: s.name, ok: false, error: e.message, data: null };
+        }
+      }));
+      const all = [];
+      const errors = [];
+      for (const r of results) {
+        if (r.ok) all.push(...(r.data || []));
+        else errors.push({ serverName: r.serverName, error: r.error });
+      }
+      return { all, errors };
+    }
+
+    /* Task: GET /nodes/{node}/tasks (since/until verificati su PVE 9.2) */
+    if (p === '/api/logs/tasks' && req.method === 'POST') {
+      const b = await readBody(req);
+      const limit = Math.min(Number(b.limit) || 200, 200);
+      const since = Number(b.since) || 0;
+      const until = Number(b.until) || 0;
+      const { all, errors } = await fetchAllServers(b.serverId || null, async (s) => {
+        const nodes = await api(s, 'GET', '/api2/json/nodes');
+        const tasks = [];
+        for (const n of nodes) {
+          const nodeName = encodeURIComponent(n.node);
+          let path = '/api2/json/nodes/' + nodeName + '/tasks?limit=' + limit;
+          if (since) path += '&since=' + since;
+          if (until) path += '&until=' + until;
+          const list = await api(s, 'GET', path);
+          for (const t of list || []) tasks.push(normalizeTask(s, n, t));
+        }
+        return tasks;
+      });
+      all.sort((a, b) => (b.starttime || 0) - (a.starttime || 0));
+      return json(res, { ok: true, events: all, errors });
+    }
+
+    /* Log di sistema: GET /nodes/{node}/syslog (testo non strutturato {n,t};
+       since/until accettano formato data 'YYYY-MM-DD HH:MM:SS' (non epoch);
+       il filtro client-side sul timestamp parsato resta come doppia sicurezza) */
+    if (p === '/api/logs/system' && req.method === 'POST') {
+      const b = await readBody(req);
+      const limit = Math.min(Number(b.limit) || 500, 1000);
+      const since = typeof b.since === 'string' && b.since ? b.since : '';
+      const { all, errors } = await fetchAllServers(b.serverId || null, async (s) => {
+        const nodes = await api(s, 'GET', '/api2/json/nodes');
+        const lines = [];
+        for (const n of nodes) {
+          const nodeName = encodeURIComponent(n.node);
+          let path = '/api2/json/nodes/' + nodeName + '/syslog?limit=' + limit;
+          if (since) path += '&since=' + encodeURIComponent(since);
+          const list = await api(s, 'GET', path);
+          for (const l of list || []) {
+            const parsed = parseSyslogLine(l.t || '');
+            lines.push({
+              serverId: s.id,
+              serverName: s.name,
+              node: n.node,
+              n: l.n || 0,
+              t: l.t || '',
+              ts: parsed.ts,
+              service: parsed.service,
+              message: parsed.message,
+            });
+          }
+        }
+        return lines;
+      });
+      /* l'API syslog restituisce in ordine cronologico (più vecchie prima):
+         invertiamo per mostrare prima le righe più recenti (ts=0 in fondo) */
+      all.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      return json(res, { ok: true, events: all, errors });
+    }
+
+    /* Log cluster: GET /cluster/log (strutturato: time,node,pri,tag,msg,user) */
+    if (p === '/api/logs/cluster' && req.method === 'POST') {
+      const b = await readBody(req);
+      const { all, errors } = await fetchAllServers(b.serverId || null, async (s) => {
+        const [log, status] = await Promise.all([
+          api(s, 'GET', '/api2/json/cluster/log'),
+          api(s, 'GET', '/api2/json/cluster/status'),
+        ]);
+        const standalone = Array.isArray(status) && status.length === 1;
+        return (log || []).map((e) => ({
+          serverId: s.id,
+          serverName: s.name,
+          node: e.node || '',
+          pri: e.pri,
+          tag: e.tag || '',
+          msg: e.msg || '',
+          user: e.user || '',
+          time: e.time || 0,
+          standalone,
+        }));
+      });
+      all.sort((a, b) => (b.time || 0) - (a.time || 0));
+      return json(res, { ok: true, events: all, errors });
+    }
+
+    /* alias compatibile: /api/logs continua a restituire i Task (stesso formato di prima) */
+    if (p === '/api/logs' && req.method === 'POST') {
+      const b = await readBody(req);
+      const limit = Math.min(Number(b.limit) || 50, 200);
+      const { all, errors } = await fetchAllServers(b.serverId || null, async (s) => {
+        const nodes = await api(s, 'GET', '/api2/json/nodes');
+        const tasks = [];
+        for (const n of nodes) {
+          const nodeName = encodeURIComponent(n.node);
+          const list = await api(s, 'GET', '/api2/json/nodes/' + nodeName + '/tasks?limit=' + limit);
+          for (const t of list || []) tasks.push(normalizeTask(s, n, t));
+        }
+        return tasks;
+      });
+      all.sort((a, b) => (b.starttime || 0) - (a.starttime || 0));
+      return json(res, { ok: true, events: all, errors });
+    }
+
+    if (p === '/api/logs/detail' && req.method === 'POST') {
+      const b = await readBody(req);
+      const s = config.servers.find((x) => x.id === b.serverId);
+      if (!s) throw new Error('Server non trovato');
+      const nodeName = encodeURIComponent(b.node);
+      const upid = encodeURIComponent(b.upid);
+      const log = await api(s, 'GET', '/api2/json/nodes/' + nodeName + '/tasks/' + upid + '/log?limit=200');
+      return json(res, { ok: true, log: log || [] });
+    }
+
+
+
+    if (p === '/api/guest/detail' && req.method === 'GET') {
+      const serverId = q.get('serverId');
+      const nodeName = encodeURIComponent(q.get('node') || '');
+      const type = q.get('type') === 'lxc' ? 'lxc' : 'qemu';
+      const vmid = q.get('vmid');
+
+      const s = config.servers.find((x) => x.id === serverId);
+      if (!s || !nodeName || !vmid) throw new Error('Parametri mancanti');
+
+      const [stRes, cfgRes, tasksRes] = await Promise.allSettled([
+        api(s, 'GET', '/api2/json/nodes/' + nodeName + '/' + type + '/' + vmid + '/status/current'),
+        api(s, 'GET', '/api2/json/nodes/' + nodeName + '/' + type + '/' + vmid + '/config'),
+        api(s, 'GET', '/api2/json/nodes/' + nodeName + '/tasks?vmid=' + vmid + '&limit=25')
+      ]);
+
+      return json(res, {
+        ok: true,
+        status: stRes.status === 'fulfilled' ? stRes.value : null,
+        config: cfgRes.status === 'fulfilled' ? cfgRes.value : null,
+        tasks: tasksRes.status === 'fulfilled' ? tasksRes.value : null,
+        errors: {
+          status: stRes.status === 'rejected' ? stRes.reason.message : null,
+          config: cfgRes.status === 'rejected' ? cfgRes.reason.message : null,
+          tasks: tasksRes.status === 'rejected' ? tasksRes.reason.message : null,
+        }
+      });
+    }
+
+    if (p === '/api/guest/rrd' && req.method === 'GET') {
+      const serverId = q.get('serverId');
+      const nodeName = encodeURIComponent(q.get('node') || '');
+      const type = q.get('type') === 'lxc' ? 'lxc' : 'qemu';
+      const vmid = q.get('vmid');
+      const timeframe = q.get('timeframe') || 'hour'; // hour, day, week, month
+
+      const s = config.servers.find((x) => x.id === serverId);
+      if (!s || !nodeName || !vmid) throw new Error('Parametri mancanti');
+
+      const rrd = await api(s, 'GET', '/api2/json/nodes/' + nodeName + '/' + type + '/' + vmid + '/rrddata?timeframe=' + encodeURIComponent(timeframe));
+      return json(res, { ok: true, data: rrd || [] });
+    }
+
+    /* ---------- Backup & Snapshot Manager (Fase 1: SOLO lettura) ---------- */
+
+    /* GET /api/backup/storages?serverId=<id>
+       Solo storage enabled + active con content che include "backup".
+       Errori parziali per nodo in "errors" (pattern multi-source dei Log). */
+    if (p === '/api/backup/storages' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim();
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      const { storages, errors } = await backupStorageTargets(server);
+      return json(res, { ok: true, storages, errors });
+    }
+
+    /* GET /api/backup/list?serverId=<id>[&node=<node>][&vmid=<n>]
+       Fonte autorevole: storage content (MAI task vzdump). Gli archivi di guest
+       eliminati restano nella risposta. Ordinamento ctime DESC, assenti in fondo. */
+    if (p === '/api/backup/list' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim();
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      const nodeFilter = (q.get('node') || '').trim() || null;
+      const vmidRaw = (q.get('vmid') || '').trim();
+      let vmid = null;
+      if (vmidRaw) {
+        vmid = Number(vmidRaw);
+        if (!Number.isInteger(vmid) || vmid <= 0) {
+          return json(res, { error: 'VMID non valido: intero positivo' }, 400);
+        }
+      }
+      if (nodeFilter && !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(nodeFilter)) {
+        return json(res, { error: 'Nodo non valido' }, 400);
+      }
+      const targets = await backupStorageTargets(server);
+      const errors = [...targets.errors];
+      const selected = nodeFilter
+        ? targets.storages.filter((st) => st.node === nodeFilter || (st.nodes || []).includes(nodeFilter))
+        : targets.storages;
+      const backups = [];
+      for (const st of selected) {
+        try {
+          const content = await api(server, 'GET',
+            '/api2/json/nodes/' + encodeURIComponent(st.node) + '/storage/' + encodeURIComponent(st.storage) +
+            '/content?content=backup' + (vmid ? '&vmid=' + vmid : ''));
+          for (const raw of content || []) {
+            backups.push({
+              serverId: server.id,
+              serverName: server.name,
+              node: st.node,
+              storage: st.storage,
+              volid: pveString(raw.volid),
+              vmid: pveNumber(raw.vmid),
+              guestType: raw.subtype === 'lxc' || raw.subtype === 'qemu' ? raw.subtype : null,
+              ctime: pveNumber(raw.ctime),
+              size: pveNumber(raw.size),
+              format: pveString(raw.format),
+              notes: pveString(raw.notes),
+              protected: pveFlag(raw.protected),
+            });
+          }
+        } catch (e) {
+          errors.push({ serverId: server.id, serverName: server.name, node: st.node, storage: st.storage, error: e.message });
+        }
+      }
+      backups.sort((a, b) => (b.ctime || 0) - (a.ctime || 0));
+      return json(res, { ok: true, backups, errors });
+    }
+
+    /* GET /api/backup/jobs?serverId=<id>
+       403 PVE distinto da "nessun job": risposta 403 esplicita con forbidden:true. */
+    if (p === '/api/backup/jobs' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim();
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      try {
+        const jobs = await api(server, 'GET', '/api2/json/cluster/backup');
+        return json(res, {
+          ok: true,
+          jobs: (jobs || []).map((j) => ({
+            serverId: server.id,
+            serverName: server.name,
+            id: pveString(j.id),
+            enabled: pveFlag(j.enabled),
+            storage: pveString(j.storage),
+            schedule: pveString(j.schedule),
+            mode: pveString(j.mode),
+            compress: j.compress !== null && j.compress !== undefined ? String(j.compress) : null,
+            /* vmid preserva la semantica PVE (stringa CSV/lista), MAI forzato a Number */
+            vmid: pveString(j.vmid),
+            all: pveFlag(j.all),
+            node: pveString(j.node),
+            notesTemplate: pveString(j['notes-template']),
+            pruneBackups: j['prune-backups'] && typeof j['prune-backups'] === 'object' ? j['prune-backups'] : null,
+          })),
+        });
+      } catch (e) {
+        if (e.pveStatus === 403) {
+          return json(res, { ok: false, serverId: server.id, serverName: server.name, forbidden: true, error: 'Permessi insufficienti per leggere i job di backup: ' + e.message }, 403);
+        }
+        throw e;
+      }
+    }
+
+    /* GET /api/snapshot/list?serverId=&node=&type=lxc|qemu=&vmid=
+       La pseudo-entry "current" NON e' uno snapshot: filtrata nel backend. */
+    if (p === '/api/snapshot/list' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim();
+      const node = (q.get('node') || '').trim();
+      const type = (q.get('type') || '').trim();
+      const vmidRaw = (q.get('vmid') || '').trim();
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      if (!node) return json(res, { error: 'Parametri mancanti: node' }, 400);
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(node)) return json(res, { error: 'Nodo non valido' }, 400);
+      if (type !== 'lxc' && type !== 'qemu') return json(res, { error: 'Tipo non valido: solo lxc o qemu' }, 400);
+      const vmid = Number(vmidRaw);
+      if (!Number.isInteger(vmid) || vmid <= 0) return json(res, { error: 'VMID non valido: intero positivo' }, 400);
+      const list = await api(server, 'GET',
+        '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/snapshot');
+      const snapshots = (list || [])
+        .filter((s) => s && s.name !== 'current')
+        .map((s) => ({
+          serverId: server.id,
+          serverName: server.name,
+          node,
+          type,
+          vmid,
+          name: pveString(s.name),
+          description: pveString(s.description),
+          parent: pveString(s.parent),
+          snaptime: pveNumber(s.snaptime),
+          snapstate: pveString(s.snapstate),
+          /* vmstate: assente -> null (LXC non lo espone: non viene inventato) */
+          vmstate: s.vmstate === null || s.vmstate === undefined ? null : pveFlag(s.vmstate),
+        }))
+        .sort((a, b) => (b.snaptime || 0) - (a.snaptime || 0));
+      return json(res, { ok: true, snapshots });
+    }
+
+    /* POST /api/tasks/status { serverId, node, upid }
+       READ-ONLY verso PVE: UNA richiesta -> UNA risposta, nessun loop/polling.
+       UPID validato (formato PVE) e encoded come segmento di path. */
+    if (p === '/api/tasks/status' && req.method === 'POST') {
+      const b = await readBody(req);
+      const serverId = typeof b.serverId === 'string' ? b.serverId.trim() : '';
+      const node = typeof b.node === 'string' ? b.node.trim() : '';
+      const upid = typeof b.upid === 'string' ? b.upid.trim() : '';
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      if (!node || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(node)) return json(res, { error: 'Nodo non valido' }, 400);
+      if (!upid || upid.length > 600 ||
+          !/^UPID:[A-Za-z0-9._-]+:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8}:[0-9A-Fa-f]{8}:[A-Za-z0-9_-]*:[0-9]*:[A-Za-z0-9@!._-]+:$/.test(upid)) {
+        return json(res, { error: 'UPID non valido' }, 400);
+      }
+      const st = await api(server, 'GET',
+        '/api2/json/nodes/' + encodeURIComponent(node) + '/tasks/' + encodeURIComponent(upid) + '/status');
+      return json(res, {
+        ok: true,
+        serverId: server.id,
+        node,
+        upid,
+        status: st ? st.status : null,
+        exitstatus: st && st.exitstatus !== undefined && st.exitstatus !== null ? st.exitstatus : null,
+        starttime: pveNumber(st && st.starttime),
+        endtime: pveNumber(st && st.endtime),
+        type: pveString(st && st.type),
+        id: st && st.id ? st.id : null,
+        user: pveString(st && st.user),
+      });
+    }
+
+    /* POST /api/backup/create { serverId, node, vmid, storage, mode, compress, notes, protected }
+       FASE 2: validazione completa PRIMA del POST vzdump; risponde subito con
+       l'UPID (nessun polling backend). Payload PVE minimale e conservativo:
+       niente remove/prune-backups/bwlimit/performance/ionice/script/tmpdir/job-id. */
+    if (p === '/api/backup/create' && req.method === 'POST') {
+      const b = await readBody(req);
+      const serverId = typeof b.serverId === 'string' ? b.serverId.trim() : '';
+      const node = typeof b.node === 'string' ? b.node.trim() : '';
+      const storage = typeof b.storage === 'string' ? b.storage.trim() : '';
+      const mode = typeof b.mode === 'string' ? b.mode.trim() : 'snapshot';
+      const compress = typeof b.compress === 'string' ? b.compress.trim() : 'zstd';
+      const notes = typeof b.notes === 'string' ? b.notes.trim() : '';
+      const isProtected = b.protected;
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      if (!isValidNodeName(node)) return json(res, { error: 'Nodo non valido' }, 400);
+      const vmid = Number(b.vmid);
+      if (!Number.isInteger(vmid) || vmid <= 0) return json(res, { error: 'VMID non valido: intero positivo' }, 400);
+      if (!storage) return json(res, { error: 'Parametri mancanti: storage' }, 400);
+      if (!['snapshot', 'suspend', 'stop'].includes(mode)) return json(res, { error: 'Modalità non valida: snapshot, suspend o stop' }, 400);
+      if (!Object.prototype.hasOwnProperty.call(PVE_COMPRESS, compress)) return json(res, { error: 'Compressione non valida: zstd, gzip, lzo o none' }, 400);
+      if (notes && (notes.length > 256 || hasControlOrBackslash(notes) || notes.includes('{{'))) {
+        return json(res, { error: 'Note non valide: massimo 256 caratteri, singola riga, nessun template' }, 400);
+      }
+      if (isProtected !== undefined && typeof isProtected !== 'boolean') {
+        return json(res, { error: 'protected deve essere un booleano' }, 400);
+      }
+      /* storage reale compatibile per quel server/nodo: riusa l'helper di Fase 1
+         (nessuna duplicazione, nessuna fiducia nel nome inviato dal client) */
+      const targets = await backupStorageTargets(server);
+      const target = targets.storages.find((st) => st.storage === storage && (st.node === node || (st.nodes || []).includes(node)));
+      if (!target) {
+        return json(res, { error: 'Storage non valido o non compatibile con i backup su questo nodo' }, 400);
+      }
+      /* guest esistente sul nodo: verifica read-only (azione on-demand, non polling) */
+      if (!(await guestExists(server, node, vmid))) {
+        return json(res, { error: 'Guest non trovato sul nodo indicato' }, 404);
+      }
+      const pveBody = { vmid: String(vmid), storage, mode, compress: PVE_COMPRESS[compress] };
+      if (notes) pveBody['notes-template'] = notes;
+      if (isProtected === true) pveBody.protected = 1;
+      try {
+        const upid = await api(server, 'POST', '/api2/json/nodes/' + encodeURIComponent(node) + '/vzdump', pveBody);
+        return json(res, { ok: true, serverId: server.id, node, vmid, storage, upid: upid || null });
+      } catch (e) {
+        if (e.pveStatus === 403) {
+          return json(res, { ok: false, forbidden: true, error: 'Permessi insufficienti per creare il backup: ' + e.message }, 403);
+        }
+        throw e;
+      }
+    }
+
+    /* POST /api/snapshot/create { serverId, node, type, vmid, name, description, vmstate }
+       FASE 2: validazione completa, verifica guest read-only e pre-check duplicati
+       (409) PRIMA del POST PVE. vmstate solo QEMU; su LXC e' un errore 400. */
+    if (p === '/api/snapshot/create' && req.method === 'POST') {
+      const b = await readBody(req);
+      const serverId = typeof b.serverId === 'string' ? b.serverId.trim() : '';
+      const node = typeof b.node === 'string' ? b.node.trim() : '';
+      const type = typeof b.type === 'string' ? b.type.trim() : '';
+      const name = typeof b.name === 'string' ? b.name.trim() : '';
+      const description = typeof b.description === 'string' ? b.description.trim() : '';
+      const vmstate = b.vmstate;
+      if (!serverId) return json(res, { error: 'Parametri mancanti: serverId' }, 400);
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      if (!isValidNodeName(node)) return json(res, { error: 'Nodo non valido' }, 400);
+      if (type !== 'lxc' && type !== 'qemu') return json(res, { error: 'Tipo non valido: solo lxc o qemu' }, 400);
+      const vmid = Number(b.vmid);
+      if (!Number.isInteger(vmid) || vmid <= 0) return json(res, { error: 'VMID non valido: intero positivo' }, 400);
+      if (!name) return json(res, { error: 'Parametri mancanti: name' }, 400);
+      if (name === 'current' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(name)) {
+        return json(res, { error: 'Nome snapshot non valido: max 63 caratteri, inizio alfanumerico, solo lettere, numeri, "_" e "-"' }, 400);
+      }
+      if (description && (description.length > 256 || hasControlOrBackslash(description))) {
+        return json(res, { error: 'Descrizione non valida: massimo 256 caratteri' }, 400);
+      }
+      if (type === 'lxc' && vmstate !== undefined && vmstate !== null) {
+        return json(res, { error: 'vmstate non supportato per LXC' }, 400);
+      }
+      if (vmstate !== undefined && vmstate !== null && typeof vmstate !== 'boolean') {
+        return json(res, { error: 'vmstate deve essere un booleano' }, 400);
+      }
+      /* guest esistente sul nodo/type: verifica read-only (azione on-demand) */
+      try {
+        await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/status/current');
+      } catch (e) {
+        if (e.pveStatus === 403) {
+          return json(res, { ok: false, forbidden: true, error: 'Permessi insufficienti: ' + e.message }, 403);
+        }
+        if (/does not exist/i.test(e.message)) {
+          return json(res, { error: 'Guest non trovato sul nodo indicato' }, 404);
+        }
+        throw e;
+      }
+      /* pre-check duplicati read-only (la pseudo-entry current non e' considerata);
+         un errore di lettura non blocca: PVE resta la validazione finale */
+      try {
+        const list = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/snapshot');
+        if ((list || []).some((s) => s && s.name === name)) {
+          return json(res, { error: 'Esiste già uno snapshot con questo nome' }, 409);
+        }
+      } catch (e) {
+        if (e.pveStatus === 403) {
+          return json(res, { ok: false, forbidden: true, error: 'Permessi insufficienti: ' + e.message }, 403);
+        }
+      }
+      const pveBody = { snapname: name };
+      if (description) pveBody.description = description;
+      if (type === 'qemu' && vmstate === true) pveBody.vmstate = 1;
+      try {
+        const upid = await api(server, 'POST', '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/snapshot', pveBody);
+        return json(res, { ok: true, serverId: server.id, node, type, vmid, name, upid: upid || null });
+      } catch (e) {
+        if (e.pveStatus === 403) {
+          return json(res, { ok: false, forbidden: true, error: 'Permessi insufficienti per creare lo snapshot: ' + e.message }, 403);
+        }
+        /* es. guest locked o storage senza supporto snapshot: messaggio PVE conservato */
+        throw e;
+      }
+    }
+
+    if (p === '/api/config') {
+      return json(res, {
+        servers: config.servers.map(sanitizeServer),
+        refreshMs: config.refreshMs,
+        autoRefreshEnabled: config.autoRefreshEnabled !== false,
+        theme: config.theme || 'system',
+        language: config.language || 'it',
+        health: { guestModes: safeGuestModes() },
+        tourCompleted: state.tourCompleted,
+        tourCompletedVersion: state.tourCompletedVersion || 0,
+      });
+    }
+
+    if (p === '/api/prefs' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (b.theme !== undefined) {
+        if (!['light', 'dark', 'system'].includes(b.theme)) throw new Error('Tema non valido');
+        config.theme = b.theme;
+      }
+      if (b.language !== undefined) {
+        if (!['it', 'en'].includes(b.language)) throw new Error('Lingua non valida');
+        config.language = b.language;
+      }
+      saveConfig();
+      return json(res, { ok: true, theme: config.theme, language: config.language });
+    }
+
+    if (p === '/api/health/prefs' && req.method === 'POST') {
+      const b = await readBody(req);
+      const key = typeof b.key === 'string' ? b.key.trim() : '';
+      const mode = typeof b.mode === 'string' ? b.mode.trim() : '';
+      const FORBIDDEN = ['__proto__', 'constructor', 'prototype'];
+      const parts = key.split(':');
+      const serverId = parts[0];
+      const node = parts[1];
+      const type = parts[2];
+      const vmidStr = parts[3];
+      if (parts.length !== 4 || !serverId || !node || !type || !vmidStr) {
+        return json(res, { error: 'Chiave non valida: atteso <serverId>:<node>:<type>:<vmid>' }, 400);
+      }
+      if (parts.some((part) => FORBIDDEN.includes(part))) {
+        return json(res, { error: 'Chiave non valida' }, 400);
+      }
+      if (type !== 'lxc' && type !== 'qemu') {
+        return json(res, { error: 'Tipo non valido: solo lxc o qemu' }, 400);
+      }
+      const vmid = Number(vmidStr);
+      if (!Number.isInteger(vmid) || vmid <= 0) {
+        return json(res, { error: 'VMID non valido: intero positivo' }, 400);
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(node)) {
+        return json(res, { error: 'Nodo non valido' }, 400);
+      }
+      if (!['alwayson', 'manual', 'ignore'].includes(mode)) {
+        return json(res, { error: 'Modalità non valida: alwayson, manual o ignore' }, 400);
+      }
+      if (!config.servers.some((s) => s.id === serverId)) {
+        return json(res, { error: 'Server non configurato' }, 400);
+      }
+      const modes = safeGuestModes();
+      if (mode === 'manual') {
+        /* l'assenza della chiave equivale a manual: config.json resta pulito */
+        delete modes[key];
+      } else {
+        modes[key] = mode;
+      }
+      saveConfig();
+      return json(res, { ok: true, key, mode });
+    }
+
+    if (p === '/api/autorefresh' && req.method === 'POST') {
+      const b = await readBody(req);
+      config.autoRefreshEnabled = !!b.enabled;
+      saveConfig();
+      return json(res, { ok: true, autoRefreshEnabled: config.autoRefreshEnabled });
+    }
+
+    if (p === '/api/refresh' && req.method === 'POST') {
+      const b = await readBody(req);
+      const allowed = [5000, 10000, 15000, 20000, 30000, 60000];
+      const ms = Number(b.refreshMs);
+      if (!allowed.includes(ms)) throw new Error('Intervallo non valido');
+      config.refreshMs = ms;
+      saveConfig();
+      return json(res, { ok: true, refreshMs: config.refreshMs });
+    }
+
+    if (p === '/api/state') {
+      return json(res, { tourCompleted: state.tourCompleted, tourCompletedVersion: state.tourCompletedVersion || 0 });
+    }
+
+    if (p === '/api/tour/complete' && req.method === 'POST') {
+      const b = await readBody(req);
+      const version = Number.isInteger(Number(b.version)) ? Number(b.version) : 1;
+      state.tourCompleted = true;
+      state.tourCompletedVersion = Math.max(state.tourCompletedVersion || 0, version);
+      saveState();
+      statusCache = null;
+      return json(res, { ok: true, tourCompleted: true, tourCompletedVersion: state.tourCompletedVersion });
+    }
+
+    /* Deprecato (release Technical Cleanup): non riattiva più alcuna modalità demo.
+       Il Tour V2 si riavvia client-side (startTour) e gira solo sui dati reali. */
+    if (p === '/api/tour/restart' && req.method === 'POST') {
+      return json(res, { ok: true, demo: false, deprecated: true });
+    }
+
+    if (p === '/api/servers' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (!b.name || !b.url || !b.user) throw new Error('Nome, URL e utente sono obbligatori');
+      let s = config.servers.find((x) => x.id === b.id);
+      if (!s) {
+        s = { id: b.id || crypto.randomUUID() };
+        config.servers.push(s);
+      }
+      s.name = b.name.trim();
+      s.url = b.url.trim().replace(/\/+$/, '');
+      s.user = b.user.trim();
+      s.verifyTls = b.verifyTls !== false;
+      if (b.password) s.password = b.password;
+      saveConfig();
+      statusCache = null;
+      return json(res, { ok: true, server: sanitizeServer(s) });
+    }
+
+    if (p.startsWith('/api/servers/') && req.method === 'DELETE') {
+      const id = decodeURIComponent(p.split('/')[3]);
+      config.servers = config.servers.filter((s) => s.id !== id);
+      saveConfig();
+      statusCache = null;
+      return json(res, { ok: true });
+    }
+
+    if (p === '/api/test' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (!b.url || !b.user || !b.password) throw new Error('URL, utente e password sono obbligatori');
+      const tmp = { url: b.url.trim().replace(/\/+$/, ''), user: b.user.trim(), password: b.password, verifyTls: b.verifyTls !== false };
+      await login(tmp);
+      const version = await api(tmp, 'GET', '/api2/json/version');
+      return json(res, { ok: true, version: version.version, release: version.release });
+    }
+
+    if (p === '/api/action' && req.method === 'POST') {
+      const b = await readBody(req);
+      const s = config.servers.find((x) => x.id === b.serverId);
+      if (!s) throw new Error('Server non trovato');
+      const allowed = ['start', 'stop', 'reboot', 'shutdown', 'suspend', 'resume'];
+      if (!allowed.includes(b.action)) throw new Error('Azione non valida');
+      const type = b.type === 'lxc' ? 'lxc' : 'qemu';
+      const upid = await api(s, 'POST', '/api2/json/nodes/' + encodeURIComponent(b.node) + '/' + type + '/' + b.vmid + '/status/' + b.action);
+      let taskDone = false;
+      if (upid) {
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r2) => setTimeout(r2, 750));
+          try {
+            const st = await api(s, 'GET', '/api2/json/nodes/' + encodeURIComponent(b.node) + '/tasks/' + encodeURIComponent(upid) + '/status');
+            if (st && (st.status === 'stopped' || st.exitstatus !== undefined)) {
+              if (st.exitstatus && st.exitstatus !== 'OK') {
+                throw new Error('Proxmox task fallito: exitstatus=' + st.exitstatus);
+              }
+              taskDone = true;
+              break;
+            }
+          } catch (e) {
+            if (/task/i.test(e.message)) break;
+          }
+        }
+      }
+      statusCache = null;
+      return json(res, { ok: true, upid: upid || null, taskDone });
+    }
+
+    if (p.startsWith('/api/')) return json(res, { error: 'Non trovato' }, 404);
+    return serveStatic(req, res, p);
+  } catch (e) {
+    return json(res, { error: e.message }, 500);
+  }
+});
+
+/* ---------- proxy WebSocket per la console LXC (termproxy VNC) ---------- */
+
+const { WebSocket: PveWebSocket, WebSocketServer } = require('ws');
+
+server.on('upgrade', async (req, socket, head) => {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname !== '/api/shell/ws') {
+    socket.destroy();
+    return;
+  }
+  /* Fase 3: la Shell richiede una sessione NodePilot valida PRIMA dell'upgrade.
+     Protocollo termproxy/vncwebsocket, auth frame PVE, resize e keepalive restano
+     esattamente invariati. */
+  if (!getSession(req)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n' + rawSecurityHeaders() + '\r\n');
+    socket.destroy();
+    return;
+  }
+  /* Fase 2: Origin validation prima dell'upgrade (i browser inviano sempre Origin
+     sul WebSocket; client senza Origin/Referer restano ammessi per compatibilità). */
+  const wsOrigin = req.headers.origin || req.headers.referer;
+  if (wsOrigin && !isSameOriginHeader(wsOrigin, req)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n' + rawSecurityHeaders() + '\r\n');
+    socket.destroy();
+    return;
+  }
+  const q = url.searchParams;
+  const serverId = q.get('serverId');
+  const node = q.get('node');
+  const vmid = q.get('vmid');
+  const type = q.get('type') === 'lxc' ? 'lxc' : 'qemu';
+  const s = config.servers.find((x) => x.id === serverId);
+  if (!s || !node || !vmid) {
+    socket.write('HTTP/1.1 400 Bad Request\r\n' + rawSecurityHeaders() + '\r\n');
+    socket.destroy();
+    return;
+  }
+  try {
+    /* crea il termproxy SOLO ora, con il client già in handshake:
+       evita il timeout di Proxmox ("failed waiting for client") */
+    const tp = await api(s, 'POST', '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/termproxy');
+    if (!tp || !tp.ticket || !tp.port) throw new Error('Impossibile creare la sessione console');
+    const port = tp.port;
+    const vncticket = tp.ticket;
+    /* piccola attesa: il termproxy deve aprire la porta prima della connessione */
+
+    const pveUrl = s.url.replace(/\/+$/, '') + '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/vncwebsocket?port=' + encodeURIComponent(port) + '&vncticket=' + encodeURIComponent(vncticket);
+    const pveWs = new PveWebSocket(pveUrl, {
+      headers: {
+        Cookie: 'PVEAuthCookie=' + s._session.ticket,
+        Origin: s.url.replace(/\/+$/, ''),
+      },
+      rejectUnauthorized: s.verifyTls !== false,
+      perMessageDeflate: false,
+      handshakeTimeout: 15000,
+    });
+    await new Promise((resolve, reject) => {
+      pveWs.once('open', resolve);
+      pveWs.once('error', reject);
+    });
+    /* con --vncticket-endpoint, Proxmox richiede il ticket VNC come PRIMO
+       messaggio WebSocket (non solo nell'URL), altrimenti chiude con
+       "failed reading ticket: authentication data is invalid" */
+    pveWs.send(Buffer.from(tp.user + ':' + tp.ticket + '\n'), { binary: true });
+    console.log('[shell] upstream connesso, porta', port, '| ticket inviato');
+    const clientWs = new WebSocketServer({ noServer: true });
+    clientWs.handleUpgrade(req, socket, head, (ws) => {
+      ws.binaryType = 'arraybuffer';
+      console.log('[shell] client connesso');
+      ws.on('message', (data) => {
+        if (pveWs.readyState === PveWebSocket.OPEN) pveWs.send(data);
+      });
+      ws.on('close', (code) => { console.log('[shell] client chiuso', code); pveWs.close(); });
+      ws.on('error', (e) => { console.log('[shell] client error', e.message); pveWs.close(); });
+      pveWs.on('message', (data) => {
+        if (ws.readyState === ws.OPEN) ws.send(data);
+      });
+      pveWs.on('close', (code) => { console.log('[shell] pve chiuso', code); ws.close(); });
+      pveWs.on('error', (e) => { console.log('[shell] pve error', e.message); ws.close(); });
+    });
+  } catch (e) {
+    console.error('[shell] errore upgrade:', e.message);
+    socket.write('HTTP/1.1 502 Bad Gateway\r\n' + rawSecurityHeaders() + '\r\n');
+    socket.destroy();
+  }
+});
+
+loadConfig();
+loadState();
+loadAuth();
+server.listen(PORT, () => {
+  console.log('');
+  console.log('  NodePilot avviata');
+  console.log('  http://localhost:' + PORT);
+  console.log('  Tour completato: ' + state.tourCompleted);
+  console.log('');
+});

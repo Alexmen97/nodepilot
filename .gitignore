@@ -1,0 +1,10 @@
+node_modules/
+config.json
+state.json
+.playwright-cli/
+*.log
+.DS_Store
+session.json
+patch_*.js
+test-*.js
+auth.json

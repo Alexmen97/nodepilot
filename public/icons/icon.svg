@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f6bff"/>
+      <stop offset="1" stop-color="#7c3aff"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#00d4ff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#00d4ff" stop-opacity="0.4"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g stroke="#fff" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polygon points="256,116 377.24,186 377.24,326 256,396 134.76,326 134.76,186" stroke-width="16" opacity="0.95"/>
+    <g stroke-width="12" opacity="0.9">
+      <line x1="256" y1="256" x2="256" y2="116"/>
+      <line x1="256" y1="256" x2="377.24" y2="186"/>
+      <line x1="256" y1="256" x2="377.24" y2="326"/>
+      <line x1="256" y1="256" x2="256" y2="396"/>
+      <line x1="256" y1="256" x2="134.76" y2="326"/>
+      <line x1="256" y1="256" x2="134.76" y2="186"/>
+    </g>
+    <circle cx="256" cy="256" r="32" fill="#fff" stroke="none"/>
+    <g stroke="none">
+      <circle cx="256" cy="116" r="20" fill="url(#glow)"/>
+      <circle cx="377.24" cy="186" r="20" fill="url(#glow)"/>
+      <circle cx="377.24" cy="326" r="20" fill="url(#glow)"/>
+      <circle cx="256" cy="396" r="20" fill="url(#glow)"/>
+      <circle cx="134.76" cy="326" r="20" fill="url(#glow)"/>
+      <circle cx="134.76" cy="186" r="20" fill="url(#glow)"/>
+    </g>
+  </g>
+</svg>
