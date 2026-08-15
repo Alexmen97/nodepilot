@@ -2591,7 +2591,7 @@ main { max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32px 60px; 
 }
 .backup-status[hidden] { display: none; }
 
-.backup-subs { display: flex; flex-direction: column; gap: 14px; }
+.backup-subs { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
 .backup-sub { padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
 .backup-sub[hidden] { display: none; }
 
