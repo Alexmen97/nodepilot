@@ -96,9 +96,7 @@ offered; the tour can be skipped or restarted any time from
 Watch a quick walkthrough of the main views — dashboard, Guest Detail,
 Health Center, Backup & Snapshot and the mobile layout:
 
-[NodePilot demo video](LINK_ASSET)
-<!-- TODO: replace LINK_ASSET with the GitHub asset URL after uploading
-     docs/demo/nodepilot-demo.mp4 as a GitHub asset. -->
+[NodePilot demo video](https://github.com/user-attachments/assets/6fd8e0ee-2d25-421c-be90-92e64d5e1c9f)
 
 
 ## Requirements
