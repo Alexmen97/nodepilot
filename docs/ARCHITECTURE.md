@@ -58,6 +58,7 @@ nodepilot
 | GET | `/api/guest/rrd` | RRD CPU/RAM series (hour/day/week/month) |
 | GET/POST | `/api/backup/storages`, `/api/backup/list`, `/api/backup/jobs`, `/api/backup/create` | Backup Manager V1 (read + create) |
 | GET/POST | `/api/snapshot/list`, `/api/snapshot/create` | snapshots (read + create) |
+| POST | `/api/auth/change-password` | change the dashboard password (auth required; invalidates all sessions) |
 | POST | `/api/tasks/status` | one request / one response task status |
 | POST | `/api/health/prefs` | Health Center expected state per guest |
 | POST | `/api/auth/login`, `/api/auth/logout`; GET `/api/auth/session` | local authentication |

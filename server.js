@@ -72,6 +72,7 @@ const SCRYPT_MAXMEM = 64 * 1024 * 1024; /* N=32768, r=8 richiede ~32MiB + overhe
 let authConfig = { username: 'admin', passwordHash: null };
 const sessions = new Map();      /* sessionId -> { username, createdAt, lastSeen } */
 const loginFailures = new Map(); /* ip -> { count, resetAt } */
+const passwordChangeFailures = new Map(); /* ip -> { count, resetAt } (dedicato al cambio password) */
 
 function loadAuth() {
   try {
@@ -208,6 +209,32 @@ function rateLimitHit(ip) {
   const entry = loginFailures.get(ip);
   if (!entry || entry.resetAt <= now) {
     loginFailures.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+  } else {
+    entry.count += 1;
+    entry.resetAt = now + RATE_WINDOW_MS;
+  }
+}
+
+/* rate limit dedicato al cambio password: separato da quello del login
+   (stessa finestra e stesso massimo); conta SOLO la password attuale errata */
+function changeRateLimitInfo(ip) {
+  const now = Date.now();
+  const entry = passwordChangeFailures.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    if (entry) passwordChangeFailures.delete(ip);
+    return { allowed: true, remaining: RATE_MAX_FAILS, retryAfter: 0 };
+  }
+  if (entry.count >= RATE_MAX_FAILS) {
+    return { allowed: false, remaining: 0, retryAfter: Math.ceil((entry.resetAt - now) / 1000) };
+  }
+  return { allowed: true, remaining: RATE_MAX_FAILS - entry.count, retryAfter: 0 };
+}
+
+function changeRateLimitHit(ip) {
+  const now = Date.now();
+  const entry = passwordChangeFailures.get(ip);
+  if (!entry || entry.resetAt <= now) {
+    passwordChangeFailures.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
   } else {
     entry.count += 1;
     entry.resetAt = now + RATE_WINDOW_MS;
@@ -732,6 +759,62 @@ const server = http.createServer(async (req, res) => {
       const s = getSession(req);
       if (!s) return json(res, { ok: true, authenticated: false });
       return json(res, { ok: true, authenticated: true, user: { username: s.username } });
+    }
+
+    /* cambio password: NON nella allowlist pubblica, quindi eredita
+       autenticazione globale, Origin validation, security headers e no-store */
+    if (p === '/api/auth/change-password' && req.method === 'POST') {
+      const ip = clientIp(req);
+      const limit = changeRateLimitInfo(ip);
+      if (!limit.allowed) {
+        authLog('rate limit cambio password: ip=' + ip);
+        res.setHeader('Retry-After', String(limit.retryAfter));
+        return json(res, { ok: false, code: 'RATE_LIMITED', error: 'Troppi tentativi. Riprova più tardi.' }, 429);
+      }
+      const b = await readBody(req);
+      const currentPassword = typeof b.currentPassword === 'string' ? b.currentPassword : '';
+      const newPassword = typeof b.newPassword === 'string' ? b.newPassword : '';
+      if (!authConfig.username || !authConfig.passwordHash) {
+        return json(res, { ok: false, code: 'NOT_CONFIGURED', error: 'Autenticazione non configurata: eseguire npm run auth:set-password' }, 503);
+      }
+      /* la password attuale viene SEMPRE verificata a costo pieno (scrypt,
+         nessuna scorciatoia temporale); solo dopo si valida la nuova */
+      if (!currentPassword || !verifyPassword(currentPassword, authConfig.passwordHash)) {
+        changeRateLimitHit(ip);
+        authLog('cambio password fallito (password attuale errata): ip=' + ip);
+        return json(res, { ok: false, code: 'WRONG_CURRENT', error: 'Password attuale non corretta' }, 401);
+      }
+      if (!newPassword || newPassword.length < 8) {
+        return json(res, { ok: false, code: 'TOO_SHORT', error: 'Nuova password troppo corta: minimo 8 caratteri' }, 400);
+      }
+      if (newPassword.length > 256) {
+        return json(res, { ok: false, code: 'TOO_LONG', error: 'Nuova password troppo lunga: massimo 256 caratteri' }, 400);
+      }
+      if (newPassword === currentPassword) {
+        return json(res, { ok: false, code: 'SAME_PASSWORD', error: 'La nuova password deve essere diversa da quella attuale' }, 400);
+      }
+      /* stesso sistema scrypt del login: N=32768, r=8, p=1, keylen 32, salt 16B */
+      const salt = crypto.randomBytes(16);
+      const hash = crypto.scryptSync(newPassword, salt, SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, maxmem: SCRYPT_MAXMEM });
+      const passwordHash = 'scrypt$' + SCRYPT_N + '$' + SCRYPT_R + '$' + SCRYPT_P + '$' + salt.toString('base64url') + '$' + hash.toString('base64url');
+      /* scrittura atomica: temp nella stessa directory (mode 600) + rename.
+         auth.json continua a contenere SOLO username + passwordHash */
+      const tmpPath = AUTH_PATH + '.tmp';
+      try {
+        fs.writeFileSync(tmpPath, JSON.stringify({ username: authConfig.username, passwordHash }, null, 2), { mode: 0o600 });
+        fs.renameSync(tmpPath, AUTH_PATH);
+      } catch (e) {
+        try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (_) { /* ignora */ }
+        console.error('Errore salvataggio auth.json:', e.message);
+        return json(res, { ok: false, error: 'Impossibile salvare la nuova password' }, 500);
+      }
+      /* commit solo dopo la scrittura riuscita: memoria, sessioni e cookie */
+      authConfig.passwordHash = passwordHash;
+      sessions.clear();
+      passwordChangeFailures.delete(ip);
+      clearSessionCookie(res);
+      authLog('password cambiata: user=' + authConfig.username);
+      return json(res, { ok: true });
     }
 
     if (p === '/api/status') return json(res, await getStatus());

@@ -78,6 +78,7 @@ offered; the tour can be skipped or restarted any time from
 - **Health Center** — healthy/warning/critical status, thresholds, expected state and task alerts
 - **Backup & Snapshot Manager V1** — backups, snapshots, storages and scheduled jobs, with guided creation and UPID tracking (read + create)
 - **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
+- **Change password** — update the dashboard password from Settings; all sessions are invalidated and a new sign-in is required
 - **Guided tour V2** — 15 steps over real data, no automatic demo
 - **Theme** light/dark/system, **Italian/English UI**, responsive mobile/desktop layout
 
@@ -149,6 +150,8 @@ verifyTls), or create `config.json` from `config.example.json`:
   7 day absolute lifetime; sessions are in-memory (a backend restart requires
   a new login).
 - Login rate limit: 5 failed attempts per 15 minutes per IP.
+- Changing the password from Settings invalidates all sessions and returns
+  the browser to the login screen.
 - Security headers on every response (CSP, X-Frame-Options, nosniff,
   Referrer-Policy) and Origin validation on authenticated mutating requests
   and the Shell WebSocket.

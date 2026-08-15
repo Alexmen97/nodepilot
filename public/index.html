@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=14">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -505,6 +505,7 @@
           </div>
         </div>
         <div class="auth-error" id="authError" role="alert" aria-live="assertive" hidden></div>
+        <div class="auth-notice" id="authNotice" role="status" hidden></div>
         <button type="submit" class="primary-btn auth-submit" id="authSubmit" data-i18n="auth.login">Accedi</button>
         <button type="button" class="ghost-btn" id="authRetry" data-i18n="auth.retry" hidden>Riprova</button>
       </form>
@@ -549,6 +550,15 @@
         </div>
 
         <div class="field">
+          <label data-i18n="settings.security">SICUREZZA</label>
+          <div class="toggle-row">
+            <span data-i18n="settings.security.label">Password della dashboard</span>
+            <button type="button" class="ghost-btn" id="btnChangePassword" data-i18n="settings.security.btn">Cambia password</button>
+          </div>
+          <p class="hint" data-i18n="settings.security.hint">Dopo il cambio dovrai accedere di nuovo.</p>
+        </div>
+
+        <div class="field">
           <label data-i18n="auth.session">Sessione</label>
           <div class="toggle-row">
             <span id="sessionUser">Utente: —</span>
@@ -557,6 +567,33 @@
           <p class="hint" data-i18n="session.info">Sessione: 12 ore di inattività / massimo 7 giorni</p>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="changePasswordModal" hidden>
+    <div class="modal glass small">
+      <div class="modal-head">
+        <h2 data-i18n="auth.change.title">Cambia password</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="changePasswordForm" class="auth-form">
+          <div class="field">
+            <label for="cpCurrent" data-i18n="auth.change.current">Password attuale</label>
+            <input type="password" id="cpCurrent" autocomplete="current-password" required>
+          </div>
+          <div class="field">
+            <label for="cpNew" data-i18n="auth.change.new">Nuova password</label>
+            <input type="password" id="cpNew" autocomplete="new-password" required minlength="8" maxlength="256">
+          </div>
+          <div class="field">
+            <label for="cpConfirm" data-i18n="auth.change.confirm">Conferma nuova password</label>
+            <input type="password" id="cpConfirm" autocomplete="new-password" required minlength="8" maxlength="256">
+          </div>
+          <div class="auth-error" id="cpError" role="alert" aria-live="assertive" hidden></div>
+          <button type="submit" class="primary-btn auth-submit" id="cpSubmit" data-i18n="auth.change.submit">Cambia password</button>
+        </form>
       </div>
     </div>
   </div>
@@ -848,9 +885,9 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=15"></script>
+  <script src="i18n.js?v=16"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
-  <script src="app.js?v=22"></script>
+  <script src="app.js?v=23"></script>
 </body>
 </html>

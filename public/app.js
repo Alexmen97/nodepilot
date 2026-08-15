@@ -27,6 +27,8 @@ let lastServerCount = 0;
 let authExpiryHandled = false;
 let authChannel = null;
 try { authChannel = new BroadcastChannel('homelab-auth'); } catch (_) { authChannel = null; }
+/* modale cambio password: durante il submit la chiusura e' bloccata */
+let changePasswordBusy = false;
 
 /* wrapper fetch centralizzato: un SOLO flusso 401 -> sessione scaduta */
 const __origFetch = window.fetch;
@@ -71,6 +73,7 @@ function showLogin() {
   updateSessionUser();
   $('authBackdrop').hidden = false;
   $('authError').hidden = true;
+  $('authNotice').hidden = true;
   $('authRetry').hidden = true;
   $('authPassword').value = '';
   try { $('authUsername').focus(); } catch (_) { /* ignora */ }
@@ -84,6 +87,13 @@ function showAuthError(msg) {
   const el = $('authError');
   el.hidden = false;
   el.textContent = msg;
+}
+
+function showAuthNotice(msg) {
+  const el = $('authNotice');
+  if (!el) return;
+  el.textContent = msg;
+  el.hidden = false;
 }
 
 function mapAuthError(status, data) {
@@ -104,6 +114,12 @@ function stopFrontendWork() {
   document.querySelectorAll('.modal-backdrop').forEach((m) => {
     if (m.id !== 'authBackdrop') m.hidden = true;
   });
+  /* la modale cambio password non deve trattenere password nella UI */
+  const cpForm = $('changePasswordForm');
+  if (cpForm) cpForm.reset();
+  const cpErr = $('cpError');
+  if (cpErr) { cpErr.hidden = true; cpErr.textContent = ''; }
+  changePasswordBusy = false;
   closeDrawer();
   if (!$('tourBackdrop').hidden) {
     $('tourBackdrop').hidden = true;
@@ -258,6 +274,104 @@ function updateSessionUser() {
 $('btnDrawerLogout').onclick = () => {
   closeDrawer();
   $('btnLogout').click();
+};
+
+/* ---------- cambio password (Impostazioni -> Sicurezza) ---------- */
+
+function openChangePasswordModal() {
+  if (changePasswordBusy) return;
+  $('cpError').hidden = true;
+  $('cpError').textContent = '';
+  $('changePasswordForm').reset();
+  $('cpSubmit').disabled = false;
+  $('cpSubmit').textContent = t('auth.change.submit');
+  $('changePasswordModal').hidden = false;
+  $('cpCurrent').focus();
+}
+
+function closeChangePasswordModal() {
+  if (changePasswordBusy) return;
+  $('changePasswordModal').hidden = true;
+  $('changePasswordForm').reset();
+  $('cpError').hidden = true;
+  $('cpError').textContent = '';
+  $('cpSubmit').disabled = false;
+  $('cpSubmit').textContent = t('auth.change.submit');
+}
+
+$('btnChangePassword').onclick = openChangePasswordModal;
+
+$('changePasswordForm').onsubmit = async (e) => {
+  e.preventDefault();
+  if (changePasswordBusy) return;
+  const err = $('cpError');
+  err.hidden = true;
+  err.textContent = '';
+  const currentPassword = $('cpCurrent').value;
+  const newPassword = $('cpNew').value;
+  const confirmPassword = $('cpConfirm').value;
+  if (newPassword !== confirmPassword) {
+    err.textContent = t('auth.change.mismatch');
+    err.hidden = false;
+    return;
+  }
+  changePasswordBusy = true;
+  const btn = $('cpSubmit');
+  btn.disabled = true;
+  btn.textContent = t('auth.change.loading');
+  try {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      /* successo: nessuna sessione mantenuta, pulizia completa e login */
+      $('changePasswordForm').reset();
+      err.hidden = true;
+      err.textContent = '';
+      changePasswordBusy = false;
+      stopFrontendWork();
+      showLogin();
+      showAuthNotice(t('auth.change.success'));
+      try { if (authChannel) authChannel.postMessage('logout'); } catch (_) { /* ignora */ }
+      return;
+    }
+    if (data && data.authenticated === false) {
+      /* sessione non piu' valida: flusso esistente di pulizia */
+      changePasswordBusy = false;
+      localCleanupAndShowLogin(false);
+      return;
+    }
+    if (res.status === 429 || (data && data.code === 'RATE_LIMITED')) {
+      err.textContent = t('auth.change.tooMany');
+    } else if (res.status === 401 || (data && data.code === 'WRONG_CURRENT')) {
+      err.textContent = t('auth.change.wrongCurrent');
+    } else if (data && data.code === 'TOO_SHORT') {
+      err.textContent = t('auth.change.tooShort');
+    } else if (data && data.code === 'TOO_LONG') {
+      err.textContent = t('auth.change.tooLong');
+    } else if (data && data.code === 'SAME_PASSWORD') {
+      err.textContent = t('auth.change.same');
+    } else if (data && data.code === 'NOT_CONFIGURED') {
+      err.textContent = t('auth.notConfigured');
+    } else if (res.status === 403) {
+      err.textContent = t('auth.change.origin');
+    } else {
+      err.textContent = t('auth.change.error');
+    }
+    err.hidden = false;
+    btn.disabled = false;
+    btn.textContent = t('auth.change.submit');
+  } catch (_) {
+    err.textContent = t('auth.network');
+    err.hidden = false;
+    btn.disabled = false;
+    btn.textContent = t('auth.change.submit');
+  } finally {
+    changePasswordBusy = false;
+  }
 };
 
 /* ---------- i18n ---------- */
@@ -2221,6 +2335,17 @@ document.querySelectorAll('.modal-backdrop').forEach((m) => {
     });
     return;
   }
+  /* modale cambio password: chiusura con cleanup dei campi; bloccata
+     durante il submit (changePasswordBusy) */
+  if (m.id === 'changePasswordModal') {
+    m.addEventListener('click', (e) => {
+      if (e.target === m) closeChangePasswordModal();
+    });
+    m.querySelectorAll('[data-close]').forEach((b) => {
+      b.onclick = closeChangePasswordModal;
+    });
+    return;
+  }
   m.addEventListener('click', (e) => {
     if (e.target === m) m.hidden = true;
   });
@@ -2592,6 +2717,11 @@ document.addEventListener('keydown', (e) => {
   if (!$('snapshotCreateModal').hidden) { e.preventDefault(); closeSnapshotCreateModal(); return; }
   if (detailState.key) return;             /* gestito dal Guest Detail */
   if (!$('shellModal').hidden) return;     /* la Shell non si chiude con ESC */
+  if (!$('changePasswordModal').hidden) {  /* durante il submit ESC non fa nulla */
+    if (changePasswordBusy) return;
+    closeChangePasswordModal();
+    return;
+  }
   const modals = ['settingsModal', 'serverModal', 'confirmModal', 'logDetailModal', 'infoModal'];
   for (let i = modals.length - 1; i >= 0; i--) {
     const m = document.getElementById(modals[i]);

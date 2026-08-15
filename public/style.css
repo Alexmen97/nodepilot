@@ -2739,6 +2739,15 @@ main { max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32px 60px; 
   border: 1px solid rgba(255, 93, 108, 0.3);
 }
 .auth-error[hidden] { display: none; }
+.auth-notice {
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--green);
+  background: rgba(34, 211, 138, 0.10);
+  border: 1px solid rgba(34, 211, 138, 0.30);
+}
+.auth-notice[hidden] { display: none; }
 .auth-submit { width: 100%; justify-content: center; }
 .auth-submit:disabled { opacity: 0.65; cursor: default; }
 
