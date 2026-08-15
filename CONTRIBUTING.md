@@ -1,57 +1,136 @@
 # Contributing to NodePilot
 
-Thanks for your interest! NodePilot is intentionally small and
-dependency-minimal; contributions that keep it that way are very welcome.
+## Welcome
 
-## Ways to contribute
+NodePilot is a self-hosted Proxmox Infrastructure Dashboard: a lightweight,
+dependency-minimal Node.js app to manage and monitor one or more Proxmox VE
+servers from the browser.
 
-- report bugs and propose features via GitHub Issues;
-- improve documentation and translations (Italian/English);
-- submit small, focused fixes and features via Pull Requests.
+Contributions are welcome. Accepted contribution types include:
 
-## Getting started
+- bug fixes;
+- new features;
+- documentation improvements;
+- UX improvements.
 
-Prerequisites: Node.js >= 22 and npm (Node 24 LTS recommended).
+## Code of Conduct
+
+By participating in this project, you agree to follow respectful and
+constructive communication.
+
+## Development Environment
+
+Requirements:
+
+- Node.js >= 22 (Node 24 LTS recommended);
+- npm;
+- Git.
 
 ```bash
 git clone https://github.com/Alexmen97/nodepilot.git
 cd nodepilot
 npm ci
-npm run auth:set-password   # creates local dashboard credentials (auth.json, ignored)
-npm start                   # http://localhost:3100
 ```
 
-There is no build step and no bundler: frontend files under `public/` are
-served as-is.
+## Running Locally
 
-## Development guidelines
+Start the development server:
 
-- Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing existing
-  behavior.
-- Keep changes minimal and focused; do not refactor unrelated code.
-- Never hardcode Proxmox data (server names, IPs, VMIDs, stats): everything
-  must come from the API.
-- No demo data: every feature must work on real data only.
-- Do not modify the termproxy/vncwebsocket Shell protocol without a verified
-  diagnosis.
-- Runtime files (`config.json`, `auth.json`, `state.json`) must never be
-  committed.
-- After changing `server.js`, restart the backend before testing.
-- Frontend asset changes require a PWA cache bump in `public/sw.js` and the
+```bash
+npm start
+```
+
+Then open <http://localhost:3100>.
+
+Create a local `config.json` (you can start from `config.example.json`) with
+your own Proxmox servers and set up a local dashboard password with
+`npm run auth:set-password`.
+
+The following files are local runtime files and must never be committed:
+
+- `config.json`
+- `auth.json`
+- `state.json`
+
+They are already covered by `.gitignore`.
+
+## Project Structure
+
+```text
+server.js   # Node backend: API, auth, Proxmox client, WebSocket shell
+public/     # frontend: HTML, JS, CSS, PWA and vendored assets
+scripts/    # installer and helper scripts
+deploy/     # systemd and LaunchAgent service templates
+docs/       # architecture documentation and images
+.github/    # CI workflow, issue templates and PR template
+```
+
+## Testing Before Pull Request
+
+Before opening a pull request, run:
+
+```bash
+npm ci --omit=dev
+npm audit --audit-level=high
+node --check server.js
+```
+
+Also run `node --check` on every changed JavaScript file, and verify that:
+
+- the GitHub Actions CI is green;
+- no secrets or personal data are included in the diff;
+- no runtime files (`config.json`, `auth.json`, `state.json`) are included.
+
+Key development rules:
+
+- keep changes minimal and focused;
+- never hardcode Proxmox data (names, IPs, VMIDs, stats): everything comes
+  from the API;
+- no demo data: every feature works on real data only;
+- frontend asset changes require the PWA cache bump in `public/sw.js` and the
   query-version bumps in `index.html`.
 
-## Before opening a pull request
+## Pull Requests
 
-- `node --check` on every changed JavaScript file;
-- `git diff --check` clean;
-- browser QA: zero console errors, IT/EN, light/dark theme, mobile width;
-- changes touching the Proxmox API tested against real data where possible;
-- no secrets or personal data in the diff.
+Create a dedicated branch:
 
-## Conventions
+```bash
+git checkout -b feature/my-change
+```
 
-- one logical change per pull request;
-- describe what changed, why, and how it was tested;
-- update the documentation when behavior changes.
+Then:
 
-All contributions are licensed under the project's MIT license.
+- describe clearly what the change does;
+- explain why it is needed;
+- attach screenshots for UI changes;
+- keep pull requests small and focused.
+
+The pull request template guides you through the required information.
+
+## Commit Messages
+
+Use short, descriptive commit messages. Examples:
+
+```text
+Add guest health metrics
+
+Fix authentication redirect
+
+Update documentation
+```
+
+## Reporting Bugs
+
+Open an issue using the GitHub issue templates (bug report or feature
+request). Do not include passwords, tokens, private IPs, or infrastructure
+details in issues.
+
+## Security Issues
+
+For security-related reports, follow the process described in
+[SECURITY.md](SECURITY.md). Do not use public issues for vulnerabilities and
+do not share private email addresses.
+
+## License
+
+NodePilot is MIT licensed. See [LICENSE](LICENSE).
