@@ -1,0 +1,94 @@
+name: Bug report
+description: Report a problem with NodePilot
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug.
+        Do not include passwords, tokens, private IPs, or sensitive infrastructure details.
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: A clear and concise description of the problem.
+      placeholder: Describe what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Ordered steps to reproduce the issue.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Screenshots or logs (sanitized)
+      description: Attach sanitized screenshots or logs. Remove any private data first.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: NodePilot version
+      description: e.g. v1.1.1
+      placeholder: v1.1.1
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Debian
+        - Ubuntu
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of node -v
+      placeholder: v22.x
+    validations:
+      required: false
+  - type: input
+    id: pve
+    attributes:
+      label: Proxmox VE version
+      description: e.g. 8.x
+    validations:
+      required: false
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - install.sh
+        - Manual
+        - systemd service
+        - macOS LaunchAgent
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that can help diagnose the issue.
+    validations:
+      required: false

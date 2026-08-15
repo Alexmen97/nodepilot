@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest an improvement for NodePilot
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please note that submitting a request
+        does not guarantee it will be implemented.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - Feature
+        - Improvement
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem it solves
+      description: What problem does this request solve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the solution you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative approaches you have considered.
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Anything else that can help evaluate the request.
+    validations:
+      required: false
