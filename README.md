@@ -91,6 +91,16 @@ offered; the tour can be skipped or restarted any time from
 | --- | --- |
 | ![Backup & Snapshot view with backups, jobs and storage](docs/images/backup-snapshot.png) | ![Responsive dashboard on a mobile screen](docs/images/mobile.png) |
 
+## Demo
+
+Watch a quick walkthrough of the main views — dashboard, Guest Detail,
+Health Center, Backup & Snapshot and the mobile layout:
+
+[NodePilot demo video](LINK_ASSET)
+<!-- TODO: replace LINK_ASSET with the GitHub asset URL after uploading
+     docs/demo/nodepilot-demo.mp4 as a GitHub asset. -->
+
+
 ## Requirements
 
 - Node.js >= 22 with npm (Node 24 LTS recommended)
