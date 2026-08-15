@@ -160,6 +160,49 @@ npm ci
 Restarting the backend invalidates active sessions: log in again after the
 update.
 
+## Run NodePilot as a service
+
+`scripts/install-service.sh` installs NodePilot as an automatic service with
+three subcommands: `install`, `uninstall` and `status`.
+
+### Linux (systemd)
+
+```bash
+sudo ./scripts/install-service.sh install
+sudo ./scripts/install-service.sh status
+sudo systemctl restart nodepilot
+sudo journalctl -u nodepilot -f
+sudo ./scripts/install-service.sh uninstall
+```
+
+- Runs as a dedicated system user `nodepilot` (never root).
+- Ownership is changed only for `config.json`, `auth.json` and
+  `state.json` (mode 600); the source code and `.git` keep their original
+  owner.
+- If the installation directory is not accessible to the service user (for
+  example a clone under a private home directory), the script stops with
+  clear instructions instead of changing permissions; `/opt/nodepilot` is the
+  suggested location.
+- Customize the port at install time with `PORT=...`, or later with
+  `sudo systemctl edit nodepilot`.
+
+### macOS (LaunchAgent)
+
+```bash
+./scripts/install-service.sh install
+./scripts/install-service.sh status
+launchctl kickstart -k gui/$(id -u)/io.github.alexmen97.nodepilot
+tail -f ~/Library/Logs/NodePilot/stdout.log
+./scripts/install-service.sh uninstall
+```
+
+- Runs as the current user, without sudo, and starts automatically at login.
+- Logs are written to `~/Library/Logs/NodePilot/`.
+- Customize the port at install time with `PORT=...`.
+
+Restarting the service invalidates active sessions (sessions are in-memory).
+
+
 ## Troubleshooting
 
 - **"Autenticazione non configurata"**: run `npm run auth:set-password` and

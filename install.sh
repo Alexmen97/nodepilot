@@ -272,8 +272,9 @@ print_summary() {
     info "Rete locale: http://${lan}:${DISPLAY_PORT}"
   fi
   info ""
-  info "L'avvio automatico (systemd su Linux, LaunchAgent su macOS) verrà"
-  info "configurato nella prossima fase."
+  info "Per eseguire NodePilot automaticamente come servizio:"
+  info "  Linux: sudo ./scripts/install-service.sh"
+  info "  macOS: ./scripts/install-service.sh"
   if [ "${AUTH_CONFIGURED_THIS_RUN:-0}" = 0 ] && [ ! -f auth.json ]; then
     info ""
     info "Ricorda di impostare la password della dashboard con:"

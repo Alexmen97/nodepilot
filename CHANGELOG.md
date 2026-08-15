@@ -16,6 +16,7 @@ Status: **Stable** — nessuna modifica funzionale
 - docs/ARCHITECTURE.md (sostituisce i documenti interni, non pubblicati);
 - README pubblico in inglese e .npmignore;
 - installer install.sh (Linux/macOS, idempotente e non distruttivo);
+- avvio automatico: systemd (Linux, utente dedicato nodepilot) e LaunchAgent (macOS) via scripts/install-service.sh;
 - config.example.json aggiornato (IP di esempio in rete TEST-NET);
 - versione pacchetto 1.1.0 → 1.1.1.
 

@@ -24,7 +24,7 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [x] LICENSE / SECURITY / CONTRIBUTING / THIRD_PARTY_NOTICES / docs/ARCHITECTURE.md
 - [x] README pubblico e .npmignore
 - [x] installer install.sh (Linux/macOS)
-- [ ] avvio automatico systemd (Linux) e LaunchAgent (macOS)
+- [x] avvio automatico systemd (Linux) e LaunchAgent (macOS)
 - [ ] screenshot del README
 - [ ] CI base su GitHub Actions
 
