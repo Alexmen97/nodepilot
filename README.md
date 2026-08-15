@@ -1,8 +1,12 @@
 # NodePilot
 
-[![CI](https://github.com/Alexmen97/nodepilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexmen97/nodepilot/actions/workflows/ci.yml)
-
 **Self-hosted Proxmox Infrastructure Dashboard**
+
+[![CI](https://github.com/Alexmen97/nodepilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexmen97/nodepilot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/Alexmen97/nodepilot)](https://github.com/Alexmen97/nodepilot/releases)
+
+![NodePilot dashboard showing multiple Proxmox nodes and guests](docs/images/dashboard.png)
 
 A lightweight, dependency-minimal web dashboard to manage and monitor one or
 more **Proxmox VE** servers (VMs and LXC containers) directly from the browser.
@@ -11,28 +15,6 @@ more **Proxmox VE** servers (VMs and LXC containers) directly from the browser.
 - **Frontend**: vanilla JavaScript/HTML/CSS — no bundler, no framework
 - **Data**: live from the Proxmox API (`/api2/json`) — always real data, no demo mode
 - **PWA**: installable, versioned cache, voluntary updates
-
-## Features
-
-- **Multi-server dashboard** — server status, global statistics and per-node VM/LXC cards
-- **Guest actions** — start / stop / restart / suspend / resume, with confirmation
-- **Guest Detail panel** — overview, CPU/RAM RRD charts (1h / 24h / 7d / 30d), configuration, last 25 tasks, Backup & Snapshot tab
-- **Proxmox logs** — tasks, system log and cluster log, with filters and per-task detail
-- **LXC Shell** — in-browser terminal via xterm.js (termproxy/vncwebsocket), for privileged and unprivileged containers
-- **Health Center** — healthy/warning/critical status, thresholds, expected state and task alerts
-- **Backup & Snapshot Manager V1** — backups, snapshots, storages and scheduled jobs, with guided creation and UPID tracking (read + create)
-- **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
-- **Guided tour V2** — 15 steps over real data, no automatic demo
-- **Theme** light/dark/system, **Italian/English UI**, responsive mobile/desktop layout
-
-## Screenshots
-
-Screenshots will be added with the first public release.
-
-## Requirements
-
-- Node.js >= 22 with npm (Node 24 LTS recommended)
-- one or more Proxmox VE servers reachable from the machine running NodePilot
 
 ## Installation
 
@@ -85,6 +67,34 @@ npm start
 On first login of a new user an optional introduction with the guided tour is
 offered; the tour can be skipped or restarted any time from
 **Settings → Restart tour** and always runs on real data.
+
+## Features
+
+- **Multi-server dashboard** — server status, global statistics and per-node VM/LXC cards
+- **Guest actions** — start / stop / restart / suspend / resume, with confirmation
+- **Guest Detail panel** — overview, CPU/RAM RRD charts (1h / 24h / 7d / 30d), configuration, last 25 tasks, Backup & Snapshot tab
+- **Proxmox logs** — tasks, system log and cluster log, with filters and per-task detail
+- **LXC Shell** — in-browser terminal via xterm.js (termproxy/vncwebsocket), for privileged and unprivileged containers
+- **Health Center** — healthy/warning/critical status, thresholds, expected state and task alerts
+- **Backup & Snapshot Manager V1** — backups, snapshots, storages and scheduled jobs, with guided creation and UPID tracking (read + create)
+- **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
+- **Guided tour V2** — 15 steps over real data, no automatic demo
+- **Theme** light/dark/system, **Italian/English UI**, responsive mobile/desktop layout
+
+## Screenshots
+
+| Guest Detail | Health Center |
+| --- | --- |
+| ![Guest Detail panel with CPU and RAM charts](docs/images/guest-detail.png) | ![Health Center view with one warning alert](docs/images/health-center.png) |
+
+| Backup & Snapshot | Mobile |
+| --- | --- |
+| ![Backup & Snapshot view with backups, jobs and storage](docs/images/backup-snapshot.png) | ![Responsive dashboard on a mobile screen](docs/images/mobile.png) |
+
+## Requirements
+
+- Node.js >= 22 with npm (Node 24 LTS recommended)
+- one or more Proxmox VE servers reachable from the machine running NodePilot
 
 ## Proxmox configuration
 
