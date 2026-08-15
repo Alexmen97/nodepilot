@@ -23,7 +23,7 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [x] repository pubblica con storia pulita (baseline v1.1.0)
 - [x] LICENSE / SECURITY / CONTRIBUTING / THIRD_PARTY_NOTICES / docs/ARCHITECTURE.md
 - [x] README pubblico e .npmignore
-- [ ] installer install.sh (Linux/macOS)
+- [x] installer install.sh (Linux/macOS)
 - [ ] avvio automatico systemd (Linux) e LaunchAgent (macOS)
 - [ ] screenshot del README
 - [ ] CI base su GitHub Actions

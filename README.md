@@ -34,20 +34,51 @@ Screenshots will be added with the first public release.
 
 ## Installation
 
+### Recommended: clone and install
+
 ```bash
 git clone https://github.com/Alexmen97/nodepilot.git
 cd nodepilot
-npm ci
-npm run auth:set-password   # set the dashboard username/password (interactive)
+./install.sh
+```
+
+### Quick: download and install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Alexmen97/nodepilot/main/install.sh | bash
+```
+
+To choose a different directory with the quick method, append it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Alexmen97/nodepilot/main/install.sh | bash -s -- /path/to/nodepilot
+```
+
+`install.sh` is idempotent and non-destructive:
+
+- checks the OS (Linux/macOS) and the requirements (bash, git, Node.js >= 18, npm); it never installs system packages by itself and prints distribution-specific hints instead;
+- installs dependencies with `npm ci --omit=dev` (no global installs);
+- creates `config.json` (from `config.example.json`) and `state.json` if missing, with mode 600;
+- starts the interactive dashboard password setup when `auth.json` is not configured — the password is never shown in the terminal;
+- never overwrites an existing `config.json`, `auth.json` or `state.json`: re-running it is safe.
+
+Start NodePilot with:
+
+```bash
 npm start
 ```
 
-Open <http://localhost:3100> and log in with the credentials set by
-`auth:set-password`. The server listens on port `3100` by default;
-override it with the `PORT` environment variable.
+Open <http://localhost:3100> and log in with the credentials set during
+installation. The server listens on port `3100` by default; override it
+with the `PORT` environment variable.
 
-> An unattended installer (`install.sh`) and systemd/LaunchAgent startup
-> templates are in preparation.
+### Manual installation (without the installer)
+
+```bash
+npm ci
+npm run auth:set-password
+npm start
+```
 
 On first login of a new user an optional introduction with the guided tour is
 offered; the tour can be skipped or restarted any time from
@@ -146,10 +177,34 @@ update.
 - **Wrong credentials format**: the Proxmox user must include the realm
   (e.g. `root@pam`).
 
+## Troubleshooting Linux
+
+NodePilot is verified on **Debian and Ubuntu**; other recent Linux
+distributions work as well.
+
+- **Node.js >= 18 is required** (Node 20 LTS recommended): the installer stops
+  with clear instructions when Node.js or npm is missing or too old.
+- **Default port: TCP 3100**. Override it with the `PORT` environment variable.
+- **Firewall (optional, LAN only)**: the example below restricts TCP 3100 to a
+  private subnet for UFW users; adapt it to your own LAN and firewall:
+
+  ```bash
+  sudo ufw allow from 192.168.1.0/24 to any port 3100 proto tcp
+  ```
+
+  This step is optional, may need `sudo`, and is not run by the installer.
+- **`install.sh` never uses sudo and never installs system packages by
+  itself**: install Node.js and git with the package manager of your
+  distribution first, then run the installer.
+
+**Security note: do not expose port 3100 directly to the Internet. Use a VPN
+or reverse proxy with HTTPS for remote access.**
+
 ## Project structure
 
 ```text
 nodepilot
+├── install.sh              # idempotent installer (Linux/macOS)
 ├── server.js               # Node backend: API, auth, Proxmox client, WebSocket Shell
 ├── package.json            # start and auth:set-password scripts
 ├── config.example.json     # template for the local config.json

@@ -15,6 +15,7 @@ Status: **Stable** — nessuna modifica funzionale
 - SECURITY.md, CONTRIBUTING.md e THIRD_PARTY_NOTICES.md (xterm.js, ws);
 - docs/ARCHITECTURE.md (sostituisce i documenti interni, non pubblicati);
 - README pubblico in inglese e .npmignore;
+- installer install.sh (Linux/macOS, idempotente e non distruttivo);
 - config.example.json aggiornato (IP di esempio in rete TEST-NET);
 - versione pacchetto 1.1.0 → 1.1.1.
 
