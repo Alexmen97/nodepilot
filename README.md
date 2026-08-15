@@ -1,11 +1,13 @@
 # NodePilot
 
+[![CI](https://github.com/Alexmen97/nodepilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexmen97/nodepilot/actions/workflows/ci.yml)
+
 **Self-hosted Proxmox Infrastructure Dashboard**
 
 A lightweight, dependency-minimal web dashboard to manage and monitor one or
 more **Proxmox VE** servers (VMs and LXC containers) directly from the browser.
 
-- **Backend**: Node.js (>= 18), framework-free, single runtime dependency (`ws`)
+- **Backend**: Node.js (>= 22, Node 24 LTS recommended), framework-free, single runtime dependency (`ws`)
 - **Frontend**: vanilla JavaScript/HTML/CSS — no bundler, no framework
 - **Data**: live from the Proxmox API (`/api2/json`) — always real data, no demo mode
 - **PWA**: installable, versioned cache, voluntary updates
@@ -29,7 +31,7 @@ Screenshots will be added with the first public release.
 
 ## Requirements
 
-- Node.js >= 18 with npm
+- Node.js >= 22 with npm (Node 24 LTS recommended)
 - one or more Proxmox VE servers reachable from the machine running NodePilot
 
 ## Installation
@@ -56,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/Alexmen97/nodepilot/main/install.sh
 
 `install.sh` is idempotent and non-destructive:
 
-- checks the OS (Linux/macOS) and the requirements (bash, git, Node.js >= 18, npm); it never installs system packages by itself and prints distribution-specific hints instead;
+- checks the OS (Linux/macOS) and the requirements (bash, git, Node.js >= 22, npm); it never installs system packages by itself and prints distribution-specific hints instead;
 - installs dependencies with `npm ci --omit=dev` (no global installs);
 - creates `config.json` (from `config.example.json`) and `state.json` if missing, with mode 600;
 - starts the interactive dashboard password setup when `auth.json` is not configured — the password is never shown in the terminal;
@@ -225,7 +227,7 @@ Restarting the service invalidates active sessions (sessions are in-memory).
 NodePilot is verified on **Debian and Ubuntu**; other recent Linux
 distributions work as well.
 
-- **Node.js >= 18 is required** (Node 20 LTS recommended): the installer stops
+- **Node.js >= 22 is required** (Node 24 LTS recommended): the installer stops
   with clear instructions when Node.js or npm is missing or too old.
 - **Default port: TCP 3100**. Override it with the `PORT` environment variable.
 - **Firewall (optional, LAN only)**: the example below restricts TCP 3100 to a

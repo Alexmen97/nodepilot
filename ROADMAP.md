@@ -26,7 +26,7 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [x] installer install.sh (Linux/macOS)
 - [x] avvio automatico systemd (Linux) e LaunchAgent (macOS)
 - [ ] screenshot del README
-- [ ] CI base su GitHub Actions
+- [x] CI base su GitHub Actions
 
 ### Stabilization & Hardening V1.1
 

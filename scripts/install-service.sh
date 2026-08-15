@@ -55,7 +55,7 @@ detect_os() {
 
 resolve_node() {
   if ! command -v node >/dev/null 2>&1; then
-    fail "node non trovato nel PATH. Installare Node.js >= 18 (vedi README)."
+    fail "node non trovato nel PATH. Installare Node.js >= 22 (vedi README)."
   fi
   NODE_BIN="$(command -v node)"
   NODE_BIN="$(cd "$(dirname "$NODE_BIN")" && pwd -P)/$(basename "$NODE_BIN")"
@@ -66,8 +66,8 @@ resolve_node() {
   case "$NODE_MAJOR" in
     ''|*[!0-9]*) fail "Impossibile determinare la versione di node ($NODE_BIN)." ;;
   esac
-  if [ "$NODE_MAJOR" -lt 18 ]; then
-    fail "Node.js >= 18 richiesto (trovato: $("$NODE_BIN" -v))."
+  if [ "$NODE_MAJOR" -lt 22 ]; then
+    fail "Node.js >= 22 richiesto (trovato: $("$NODE_BIN" -v))."
   fi
 }
 

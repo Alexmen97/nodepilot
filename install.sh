@@ -80,10 +80,10 @@ node_install_hints() {
                             info "    sudo dnf install -y nodejs npm" ;;
         *arch*) info "  Su Arch:"
                 info "    sudo pacman -S nodejs npm" ;;
-        *) info "  Installa Node.js (>= 18) con il gestore pacchetti della tua distribuzione." ;;
+        *) info "  Installa Node.js >= 22 (Node 24 LTS raccomandato) con il gestore pacchetti della tua distribuzione." ;;
       esac
     else
-      info "  Installa Node.js (>= 18) con il gestore pacchetti della tua distribuzione."
+      info "  Installa Node.js >= 22 (Node 24 LTS raccomandato) con il gestore pacchetti della tua distribuzione."
     fi
     info "  In alternativa: https://nodejs.org/"
   fi
@@ -109,7 +109,7 @@ git_install_hints() {
 
 check_requirements() {
   if ! command -v node >/dev/null 2>&1; then
-    info "Node.js non trovato. È richiesto Node.js >= 18."
+    info "Node.js non trovato. È richiesto Node.js >= 22 (Node 24 LTS raccomandato)."
     node_install_hints
     fail "requisito mancante: Node.js"
   fi
@@ -117,10 +117,10 @@ check_requirements() {
   case "$NODE_MAJOR" in
     ''|*[!0-9]*) fail "Impossibile determinare la versione di Node.js ('$(node -v)')." ;;
   esac
-  if [ "$NODE_MAJOR" -lt 18 ]; then
-    warn "Node.js $(node -v) rilevato: è richiesto Node.js >= 18."
+  if [ "$NODE_MAJOR" -lt 22 ]; then
+    warn "Node.js $(node -v) rilevato: è richiesto Node.js >= 22 (Node 24 LTS raccomandato)."
     node_install_hints
-    fail "requisito non soddisfatto: Node.js >= 18"
+    fail "requisito non soddisfatto: Node.js >= 22"
   fi
   if ! command -v npm >/dev/null 2>&1; then
     info "npm non trovato (normalmente viene installato insieme a Node.js)."

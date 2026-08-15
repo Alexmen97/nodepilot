@@ -1,0 +1,178 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-matrix:
+    name: Node ${{ matrix.node }} (Ubuntu)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      - name: JavaScript syntax check
+        run: |
+          set -euo pipefail
+          files="$(git ls-files '*.js' | grep -v '^public/vendor/')"
+          if [ -z "$files" ]; then
+            echo "::error::Nessun file JS tracciato trovato"; exit 1
+          fi
+          printf '%s\n' "$files" | xargs node --check
+          echo 'node --check: OK'
+
+      - name: Shell syntax check (bash -n)
+        run: |
+          bash -n install.sh
+          bash -n scripts/install-service.sh
+
+      - name: ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck -S warning install.sh scripts/install-service.sh
+
+      - name: Git hygiene — trailing whitespace
+        run: |
+          if git grep -nE ' +$' -- '*.js' '*.sh' '*.md' '*.json' '*.html' '*.css'; then
+            echo "::error::Trailing whitespace nei file tracciati"; exit 1
+          fi
+
+      - name: Git hygiene — forbidden files
+        run: |
+          if git ls-files | grep -E '(^|/)(config\.json|auth\.json|state\.json|session\.json|AGENTS\.md|PROJECT_CONTEXT\.md|patch_.*\.js|test-.*\.js)$|\.log$|(^|/)\.playwright-cli/|(^|/)node_modules/|(^|/)\.DS_Store$'; then
+            echo "::error::File runtime/privato tracciato nel repository"; exit 1
+          fi
+
+      - name: Secret patterns scan (file names only)
+        run: |
+          set -euo pipefail
+          pattern='scrypt\$[0-9]+\$|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|(^|[[:space:]{"'\'',])(password|secret|token|api[_-]?key)["'\'']?[[:space:]]*[:=][[:space:]]*["'\''][A-Za-z0-9+/=_-]{8,}'
+          hits="$(git grep -lE "$pattern" || true)"
+          if [ -n "$hits" ]; then
+            failed=0
+            for f in $hits; do
+              if git grep -nE "$pattern" -- "$f" | grep -qvE 'YOUR_PASSWORD|LA_TUA_PASSWORD'; then
+                echo "::error::Possibile secret in: $f (contenuto non mostrato; verificare localmente)"
+                failed=1
+              fi
+            done
+            if [ "$failed" -eq 1 ]; then
+              exit 1
+            fi
+          fi
+          echo 'Secret scan: nessun match'
+
+      - name: npm pack dry-run (no runtime/private files)
+        run: |
+          if npm pack --dry-run 2>&1 | grep -E 'config\.json|auth\.json|state\.json|\.log|AGENTS|PROJECT_CONTEXT|playwright|node_modules'; then
+            echo "::error::Il pacchetto npm include file runtime/privati"; exit 1
+          fi
+
+      - name: npm audit (high or critical)
+        run: npm audit --audit-level=high
+
+      - name: Installer smoke test (idempotent, non-interactive)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          tar -cf - --exclude=.git . | tar -xf - -C "$tmp"
+          cd "$tmp"
+          bash install.sh > install1.out 2>&1
+          test -f config.json && test -f state.json
+          test "$(stat -c %a config.json)" = 600
+          test "$(stat -c %a state.json)" = 600
+          test ! -f auth.json
+          grep -q 'Per eseguire NodePilot automaticamente come servizio' install1.out
+          sha256sum config.json state.json > sum1.txt
+          bash install.sh > install2.out 2>&1
+          sha256sum config.json state.json > sum2.txt
+          diff sum1.txt sum2.txt
+          echo 'Installer smoke test: OK'
+
+      - name: systemd template lint (no service install)
+        run: |
+          if command -v systemd-analyze >/dev/null 2>&1; then
+            NODE_BIN="$(command -v node)"
+            sed -e 's|@@APP_DIR@@|/opt/nodepilot|g' -e "s|@@NODE_BIN@@|$NODE_BIN|g" -e 's|@@PORT@@|3100|g' -e 's|@@SERVICE_USER@@|nodepilot|g' deploy/systemd/nodepilot.service.template > /tmp/nodepilot.service
+            systemd-analyze verify /tmp/nodepilot.service
+          else
+            echo 'systemd-analyze non disponibile: skip'
+          fi
+
+  macos-checks:
+    name: macOS static checks (Node 24)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      - name: JavaScript syntax check
+        run: |
+          set -euo pipefail
+          files="$(git ls-files '*.js' | grep -v '^public/vendor/')"
+          if [ -z "$files" ]; then
+            echo "::error::Nessun file JS tracciato trovato"; exit 1
+          fi
+          printf '%s\n' "$files" | xargs node --check
+          echo 'node --check: OK'
+
+      - name: Shell syntax check (bash 3.2)
+        run: |
+          bash -n install.sh
+          bash -n scripts/install-service.sh
+
+      - name: Installer smoke test (idempotent, non-interactive)
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          tar -cf - --exclude=.git . | tar -xf - -C "$tmp"
+          cd "$tmp"
+          bash install.sh > install1.out 2>&1
+          test -f config.json && test -f state.json
+          test "$(stat -f %Lp config.json)" = 600
+          test "$(stat -f %Lp state.json)" = 600
+          test ! -f auth.json
+          shasum -a 256 config.json state.json > sum1.txt
+          bash install.sh > install2.out 2>&1
+          shasum -a 256 config.json state.json > sum2.txt
+          diff sum1.txt sum2.txt
+          echo 'Installer smoke test (macOS): OK'
+
+      - name: LaunchAgent template lint (no bootstrap)
+        run: |
+          if command -v plutil >/dev/null 2>&1; then
+            NODE_BIN="$(command -v node)"
+            sed -e 's|@@APP_DIR@@|/tmp/nodepilot|g' -e "s|@@NODE_BIN@@|$NODE_BIN|g" -e 's|@@PORT@@|3100|g' -e 's|@@LOG_DIR@@|/tmp/nodepilot-logs|g' deploy/launchd/io.github.alexmen97.nodepilot.plist.template > /tmp/nodepilot.plist
+            plutil -lint /tmp/nodepilot.plist
+          else
+            echo 'plutil non disponibile: skip'
+          fi

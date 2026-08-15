@@ -5,7 +5,7 @@ verified behavior of the current release; details may evolve across versions.
 
 ## 1. Stack
 
-- **Backend**: Node.js (>= 18), framework-free, single runtime dependency
+- **Backend**: Node.js (>= 22, Node 24 LTS recommended), framework-free, single runtime dependency
   (`ws`). Serves the static frontend, exposes the JSON API and proxies the
   Proxmox WebSocket console.
 - **Frontend**: vanilla JavaScript/HTML/CSS in `public/`. No bundler, no

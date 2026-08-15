@@ -13,7 +13,7 @@
     "auth:set-password": "node scripts/set-password.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "license": "MIT",
   "dependencies": {

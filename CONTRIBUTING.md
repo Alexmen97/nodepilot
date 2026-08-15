@@ -11,7 +11,7 @@ dependency-minimal; contributions that keep it that way are very welcome.
 
 ## Getting started
 
-Prerequisites: Node.js >= 18 and npm.
+Prerequisites: Node.js >= 22 and npm (Node 24 LTS recommended).
 
 ```bash
 git clone https://github.com/Alexmen97/nodepilot.git
