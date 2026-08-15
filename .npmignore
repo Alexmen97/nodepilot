@@ -1,0 +1,16 @@
+# Files excluded from the published npm package.
+# When this file exists it fully replaces .gitignore for npm packaging.
+node_modules/
+config.json
+auth.json
+state.json
+session.json
+*.log
+.DS_Store
+.playwright-cli/
+patch_*.js
+test-*.js
+docs/
+.github/
+deploy/
+*.tgz

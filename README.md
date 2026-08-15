@@ -1,45 +1,62 @@
-# NodePilot — Self-hosted Proxmox Infrastructure Dashboard
+# NodePilot
 
-Dashboard web self-hosted per gestire e monitorare uno o più server **Proxmox VE** (VM e container LXC) direttamente dal browser.
+**Self-hosted Proxmox Infrastructure Dashboard**
 
-- **Backend**: Node.js (`server.js`), senza framework, unica dipendenza runtime `ws`
-- **Frontend**: vanilla JavaScript/HTML/CSS, nessun bundler e nessun framework
-- **Dati**: API Proxmox (`/api2/json`), sempre dati reali, nessun dato demo
-- **PWA**: installabile, cache versionata, aggiornamento volontario
+A lightweight, dependency-minimal web dashboard to manage and monitor one or
+more **Proxmox VE** servers (VMs and LXC containers) directly from the browser.
 
-## Funzionalità
+- **Backend**: Node.js (>= 18), framework-free, single runtime dependency (`ws`)
+- **Frontend**: vanilla JavaScript/HTML/CSS — no bundler, no framework
+- **Data**: live from the Proxmox API (`/api2/json`) — always real data, no demo mode
+- **PWA**: installable, versioned cache, voluntary updates
 
-- **Dashboard multi-server** — stato dei server, statistiche globali e card VM/LXC per nodo
-- **Azioni sui guest** — avvia / ferma / riavvia / sospendi / riprendi, con conferma
-- **Guest Detail** — panoramica, grafici RRD CPU/RAM (1h/24h/7g/30g), configurazione, ultimi 25 task e tab Backup & Snapshot
-- **Log Proxmox** — task, log di sistema e log cluster, con filtri e dettaglio del singolo task
-- **Shell LXC** — terminale nel browser via xterm.js (termproxy/vncwebsocket), per container privileged e unprivileged
-- **Monitoraggio (Health Center)** — stato healthy/warning/critical, soglie, expected state e alert sui task
-- **Backup & Snapshot Manager V1** — backup, snapshot, storage e job schedulati, con creazione guidata e tracking UPID (read + create)
-- **Autenticazione locale** — login utente/password, cookie di sessione HttpOnly, rate limit, API e WebSocket Shell protetti
-- **Tour guidato V2** — 15 step sui dati reali, nessuna demo automatica
-- **Tema** chiaro/scuro/sistema, **i18n IT/EN**, layout responsive mobile/desktop
+## Features
 
-## Requisiti
+- **Multi-server dashboard** — server status, global statistics and per-node VM/LXC cards
+- **Guest actions** — start / stop / restart / suspend / resume, with confirmation
+- **Guest Detail panel** — overview, CPU/RAM RRD charts (1h / 24h / 7d / 30d), configuration, last 25 tasks, Backup & Snapshot tab
+- **Proxmox logs** — tasks, system log and cluster log, with filters and per-task detail
+- **LXC Shell** — in-browser terminal via xterm.js (termproxy/vncwebsocket), for privileged and unprivileged containers
+- **Health Center** — healthy/warning/critical status, thresholds, expected state and task alerts
+- **Backup & Snapshot Manager V1** — backups, snapshots, storages and scheduled jobs, with guided creation and UPID tracking (read + create)
+- **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
+- **Guided tour V2** — 15 steps over real data, no automatic demo
+- **Theme** light/dark/system, **Italian/English UI**, responsive mobile/desktop layout
 
-- Node.js >= 18
-- uno o più server Proxmox VE raggiungibili dal backend
+## Screenshots
 
-## Installazione e primo accesso
+Screenshots will be added with the first public release.
+
+## Requirements
+
+- Node.js >= 18 with npm
+- one or more Proxmox VE servers reachable from the machine running NodePilot
+
+## Installation
 
 ```bash
-npm install
-npm run auth:set-password   # crea/aggiorna la password di accesso alla dashboard (interattivo)
+git clone https://github.com/Alexmen97/nodepilot.git
+cd nodepilot
+npm ci
+npm run auth:set-password   # set the dashboard username/password (interactive)
 npm start
 ```
 
-Apri [http://localhost:3100](http://localhost:3100) e accedi con la password impostata con `auth:set-password`.
+Open <http://localhost:3100> and log in with the credentials set by
+`auth:set-password`. The server listens on port `3100` by default;
+override it with the `PORT` environment variable.
 
-Al primo login di un nuovo utente viene proposta un'introduzione con il tour; il tour può essere saltato o riavviato in qualsiasi momento da **Impostazioni → Riavvia tour**. Il tour gira solo sui dati reali già caricati.
+> An unattended installer (`install.sh`) and systemd/LaunchAgent startup
+> templates are in preparation.
 
-## Configurazione dei server Proxmox
+On first login of a new user an optional introduction with the guided tour is
+offered; the tour can be skipped or restarted any time from
+**Settings → Restart tour** and always runs on real data.
 
-Aggiungi i server da **Impostazioni → Server** (nome, URL, utente, password, verifyTls) oppure crea `config.json` partendo da `config.example.json`:
+## Proxmox configuration
+
+Add servers from **Settings → Servers** (name, URL, user, password,
+verifyTls), or create `config.json` from `config.example.json`:
 
 ```json
 {
@@ -50,10 +67,10 @@ Aggiungi i server da **Impostazioni → Server** (nome, URL, utente, password, v
   "servers": [
     {
       "id": "pve-main",
-      "name": "Proxmox Principale",
-      "url": "https://192.168.1.10:8006",
+      "name": "Main Proxmox",
+      "url": "https://192.0.2.10:8006",
       "user": "root@pam",
-      "password": "LA_TUA_PASSWORD",
+      "password": "YOUR_PASSWORD",
       "verifyTls": false
     }
   ],
@@ -65,65 +82,103 @@ Aggiungi i server da **Impostazioni → Server** (nome, URL, utente, password, v
 }
 ```
 
-- `verifyTls: false` serve di norma con i certificati self-signed di Proxmox.
-- I nodi di ogni server vengono scoperti automaticamente dalle API: non esiste un campo `node` nella configurazione.
-- `health.guestModes` (opzionale) associa `<serverId>:<node>:<tipo>:<vmid>` (tipo `qemu` o `lxc`) a `alwayson` o `ignore`; `manual` è il default e corrisponde all'assenza della chiave.
-- `refreshMs` è l'intervallo di aggiornamento della dashboard (dalla UI: 5–60 secondi).
+- `verifyTls: false` is normally required with Proxmox self-signed certificates.
+- Nodes are discovered automatically from the API: there is no `node` field.
+- `refreshMs` is the dashboard polling interval (5–60 seconds, also settable
+  from the UI).
+- Optional `health.guestModes` maps `<serverId>:<node>:<type>:<vmid>`
+  (`qemu` or `lxc`) to `alwayson` or `ignore` for Health Center
+  expected states; `manual` is the default.
 
-## Aggiornamento dei dati
+## Security
 
-La dashboard usa **fetch polling** con intervallo configurabile: i dati arrivano dalle API Proxmox tramite il backend, su richiesta del client.
+- Dashboard password stored as an scrypt hash in `auth.json` — never in
+  plain text, never tracked by Git.
+- Session cookie `hl_session`: HttpOnly, SameSite=Lax, 12 h idle timeout,
+  7 day absolute lifetime; sessions are in-memory (a backend restart requires
+  a new login).
+- Login rate limit: 5 failed attempts per 15 minutes per IP.
+- Security headers on every response (CSP, X-Frame-Options, nosniff,
+  Referrer-Policy) and Origin validation on authenticated mutating requests
+  and the Shell WebSocket.
+- Passwords, hashes, cookies and session ids are never logged.
 
-## Autenticazione
+Operators: expose NodePilot only on a trusted local network or behind a
+reverse proxy with HTTPS, and keep `config.json`, `auth.json` and
+`state.json` readable only by the service user. See
+[SECURITY.md](SECURITY.md).
 
-- Password locale della dashboard: `npm run auth:set-password`, salvata come hash scrypt in `auth.json` (mai in chiaro, non tracciato da Git).
-- Sessione: cookie `hl_session` HttpOnly, SameSite=Lax; idle 12 ore, durata massima 7 giorni; sessioni in memoria (il riavvio del backend richiede un nuovo login).
-- Rate limit sul login: 5 tentativi falliti / 15 minuti per IP.
-- Tutte le route API e il WebSocket della Shell richiedono una sessione valida.
+## Runtime files
 
-Limiti V1: account singolo, niente MFA né recovery via email.
-
-## File runtime e sicurezza
-
-| File | Contenuto | Git | Permessi |
+| File | Content | Git | Permissions |
 | --- | --- | --- | --- |
-| `config.json` | server Proxmox (credenziali PVE) e preferenze | ignorato | 600 |
-| `auth.json` | username e hash della password dashboard | ignorato | 600 |
-| `state.json` | stato persistente (es. tour completato) | ignorato | 600 |
+| `config.json` | Proxmox servers (credentials) and preferences | ignored | 600 |
+| `auth.json` | dashboard username + scrypt password hash | ignored | 600 |
+| `state.json` | persistent state (e.g. tour completed) | ignored | 600 |
 
-- **`config.json` contiene le credenziali Proxmox e deve avere permessi 600**; è già in `.gitignore` e non va mai committato.
-- Applica `chmod 600 config.json auth.json state.json` dopo la creazione.
-- Esponi la dashboard solo in rete locale o dietro un reverse proxy con HTTPS.
+These files are created locally at runtime and are never committed.
 
-## Avvio e operatività
+## Updating
 
-- Avvio: `npm start` (oppure `node server.js`), porta 3100 (override con `PORT`).
-- Se il backend è supervisionato da PM2 (processo `server`), dopo modifiche a `server.js`: `pm2 restart server`.
-- Per cambiare la password: `npm run auth:set-password` e riavvia il backend.
-
-## Struttura
-
-```text
-NodePilot
-├── server.js               # backend Node: API, auth, login PVE, WebSocket Shell
-├── config.json             # configurazione locale (NON committare)
-├── auth.json               # credenziali dashboard (NON committare)
-├── state.json              # stato persistente (NON committare)
-├── package.json            # script start e auth:set-password
-├── scripts/set-password.js # setup password dashboard
-└── public/
-    ├── index.html          # struttura DOM, layout e modali
-    ├── app.js              # logica frontend: polling, render, Guest Detail, shell
-    ├── style.css           # tema e layout responsive
-    ├── i18n.js             # traduzioni IT/EN
-    ├── manifest.json       # PWA
-    ├── sw.js               # service worker (cache versionata)
-    └── vendor/             # xterm.js e addon (solo per LXC, nessun noVNC)
+```bash
+git pull
+npm ci
+# restart the NodePilot process
 ```
 
-## Documentazione
+Restarting the backend invalidates active sessions: log in again after the
+update.
 
-- [AGENTS.md](AGENTS.md) — regole permanenti per lo sviluppo
-- [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) — architettura verificata e handover
-- [CHANGELOG.md](CHANGELOG.md) — release
-- [ROADMAP.md](ROADMAP.md) — stato e direzione del progetto
+## Troubleshooting
+
+- **"Autenticazione non configurata"**: run `npm run auth:set-password` and
+  restart the backend.
+- **404 on endpoints after editing `server.js`**: the backend must be
+  restarted to serve the new routes.
+- **Theme not applied**: the CSP in `server.js` pins a hash of the single
+  inline theme script; if that script changes, update the hash (see
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+- **Proxmox connection errors with self-signed certificates**: set
+  `verifyTls: false` for that server.
+- **Login blocked with 429**: login rate limit — wait up to 15 minutes.
+- **Empty LXC Shell**: `xterm.css` must be served from
+  `public/vendor/xterm.css`; after asset updates check the PWA cache version.
+- **Wrong credentials format**: the Proxmox user must include the realm
+  (e.g. `root@pam`).
+
+## Project structure
+
+```text
+nodepilot
+├── server.js               # Node backend: API, auth, Proxmox client, WebSocket Shell
+├── package.json            # start and auth:set-password scripts
+├── config.example.json     # template for the local config.json
+├── scripts/set-password.js # dashboard password setup
+├── docs/ARCHITECTURE.md    # architecture overview for contributors
+└── public/
+    ├── index.html          # DOM structure, layout and modals
+    ├── app.js              # frontend logic: polling, rendering, Guest Detail, shell
+    ├── style.css           # theme and responsive layout
+    ├── i18n.js             # IT/EN translations
+    ├── manifest.json       # PWA
+    ├── sw.js               # service worker (versioned cache)
+    ├── icons/              # app icons
+    └── vendor/             # xterm.js and addons (LXC shell only)
+```
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture and verified
+  behavior
+- [CHANGELOG.md](CHANGELOG.md) — release notes (Italian)
+- [ROADMAP.md](ROADMAP.md) — project status and direction (Italian)
+
+## Contributing and security
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+
+## License
+
+[MIT](LICENSE) · Copyright (c) 2026 Alexmen97

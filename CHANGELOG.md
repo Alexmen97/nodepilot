@@ -2,8 +2,24 @@
 
 Questo file riassume le release funzionali di NodePilot, dalla più
 recente alla più vecchia, in una forma leggibile anche senza leggere il codice.
-Git resta la fonte completa dello storico; AGENTS.md e PROJECT_CONTEXT.md
-restano le fonti tecniche di dettaglio.
+Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
+tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
+privato precedente alla pubblicazione open source.
+
+## v1.1.1 — Open Source Preparation
+
+Status: **Stable** — nessuna modifica funzionale
+
+- repository pubblica preparata con storia pulita a partire dalla baseline v1.1.0;
+- LICENSE MIT (Copyright (c) 2026 Alexmen97);
+- SECURITY.md, CONTRIBUTING.md e THIRD_PARTY_NOTICES.md (xterm.js, ws);
+- docs/ARCHITECTURE.md (sostituisce i documenti interni, non pubblicati);
+- README pubblico in inglese e .npmignore;
+- config.example.json aggiornato (IP di esempio in rete TEST-NET);
+- versione pacchetto 1.1.0 → 1.1.1.
+
+API, autenticazione, Tour V2, Security Hardening e UX invariati; nessun asset
+frontend modificato (nessun bump PWA).
 
 ## NodePilot Rebranding
 
@@ -179,15 +195,15 @@ Limiti V1:
 
 QA eseguito:
 
-- backup reale LXC 108 (backend e UI);
-- snapshot reale LXC 108 (backend e UI);
+- backup reale su un container LXC di test (backend e UI);
+- snapshot reale su un container LXC di test (backend e UI);
 - duplicate guard snapshot (409 backend e client);
-- multi-server PVE1 + PVE2;
+- multi-server su due host PVE reali;
 - regression Shell completa;
 - transizione PWA v7 → v8 verificata.
 
 Nota: alcuni artifact di test reali sono stati lasciati intenzionalmente
-sull'ambiente PVE1 per QA futuro; vedere PROJECT_CONTEXT.md.
+sull'ambiente PVE di QA per test futuri.
 
 ## Health Center V1
 

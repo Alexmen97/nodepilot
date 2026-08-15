@@ -1,8 +1,13 @@
 {
   "name": "nodepilot",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Self-hosted Proxmox Infrastructure Dashboard",
   "main": "server.js",
+  "author": "Alexmen97",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alexmen97/nodepilot.git"
+  },
   "scripts": {
     "start": "node server.js",
     "auth:set-password": "node scripts/set-password.js"

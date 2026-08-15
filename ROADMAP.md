@@ -1,7 +1,7 @@
 # NodePilot — Roadmap
 
 Stato delle funzionalità e direzione prevista. Questo file NON è una specifica
-tecnica: i dettagli vivono in AGENTS.md e PROJECT_CONTEXT.md.
+tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 
 ## Stable
 
@@ -17,6 +17,16 @@ tecnica: i dettagli vivono in AGENTS.md e PROJECT_CONTEXT.md.
 - [x] NodePilot branding
 
 ## Next
+
+### Open Source Preparation V1.1.1
+
+- [x] repository pubblica con storia pulita (baseline v1.1.0)
+- [x] LICENSE / SECURITY / CONTRIBUTING / THIRD_PARTY_NOTICES / docs/ARCHITECTURE.md
+- [x] README pubblico e .npmignore
+- [ ] installer install.sh (Linux/macOS)
+- [ ] avvio automatico systemd (Linux) e LaunchAgent (macOS)
+- [ ] screenshot del README
+- [ ] CI base su GitHub Actions
 
 ### Stabilization & Hardening V1.1
 
