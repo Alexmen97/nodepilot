@@ -79,7 +79,14 @@
         credentials: { username: vncCredentials.username, password: vncCredentials.password },
       });
       rfb.scaleViewport = true;
-      rfb.resizeSession = true;
+      /* resize remoto disabilitato: le VM QEMU testate (virtio-gpu e std-vga)
+         rifiutano SetDesktopSize; scaleViewport copre il ridimensionamento locale
+         ed evita i warning "Server did not accept the resize request". */
+      rfb.resizeSession = false;
+      /* qualita' e compressione ottimizzate per LAN: meno banda e meno lavoro encoder
+         sui rect Tight/JPEG, senza degrado visibile su testo e icone (misurato). */
+      rfb.qualityLevel = 4;
+      rfb.compressionLevel = 1;
       rfb.addEventListener('connect', () => {
         vncConnected = true;
         setStatus(t('vnc.connected'), 'ok', false);
