@@ -31,7 +31,7 @@ nodepilot
     ├── manifest.json       # PWA metadata
     ├── sw.js               # service worker (versioned cache)
     ├── icons/              # app icons (svg + png variants)
-    └── vendor/             # xterm.js and addons (LXC shell only, no noVNC)
+    └── vendor/             # xterm.js (LXC shell) and noVNC 1.7.0 (QEMU console)
 ```
 
 ## 3. Backend (server.js)
@@ -62,7 +62,9 @@ nodepilot
 | POST | `/api/tasks/status` | one request / one response task status |
 | POST | `/api/health/prefs` | Health Center expected state per guest |
 | POST | `/api/auth/login`, `/api/auth/logout`; GET `/api/auth/session` | local authentication |
+| POST | `/api/vnc/prep` | QEMU console: creates the Proxmox vncproxy and returns an opaque single-use prepId + temporary RFB credentials |
 | WS | `/api/shell/ws` | LXC shell tunnel (session checked before upgrade) |
+| WS | `/api/vnc/ws` | QEMU VNC console tunnel (session + Origin checked before upgrade; opaque prepId, single-use, 60 s TTL) |
 
 Partial failures are handled explicitly: multi-server endpoints return
 `{ ok, ..., errors }` and the UI keeps healthy servers visible.
@@ -123,9 +125,9 @@ xterm.js → dashboard backend → Proxmox /termproxy → /vncwebsocket → LXC 
 
 - Protocol: initial auth `user:ticket\n`; input `0:<byte_length>:<data>`;
   resize `1:<cols>:<rows>:`; keepalive `2`.
-- **noVNC is not used**: it is an RFB/VNC client and is not the correct client
-  for the textual termproxy stream. `/termproxy` must not be replaced with
-  `/vncproxy`.
+- **noVNC is not used for the LXC shell**: it is an RFB/VNC client and is not
+  the correct client for the textual termproxy stream. `/termproxy` must not
+  be replaced with `/vncproxy`.
 - The console prompt arrives only after the initial resize frame.
 - `xterm.css` must always be loaded from `public/vendor/xterm.css`.
 - `closeShell()` is the single cleanup point (WebSocket, keepalive timer,
@@ -133,9 +135,39 @@ xterm.js → dashboard backend → Proxmox /termproxy → /vncwebsocket → LXC 
 - The shell works for privileged and unprivileged containers; container
   passwords are never stored by the dashboard.
 
+## 6.1 QEMU VNC console (noVNC)
+
+```text
+noVNC (public/vendor/novnc) -> dashboard backend -> Proxmox /vncproxy
+-> /vncwebsocket -> vncterm/QEMU
+```
+
+- Available for **running QEMU VMs** from the Guest Detail action bar
+  ("Console" button); LXC guests keep the xterm.js Shell unchanged.
+- **Two-phase flow**: `POST /api/vnc/prep` (session + Origin guarded) creates
+  the Proxmox vncproxy, stores `{ ticket, port, user, password }` in memory
+  under a cryptographically random, opaque, single-use `prepId` (60 s TTL)
+  and returns only `prepId` + temporary RFB credentials. Then the frontend
+  opens `WS /api/vnc/ws?prepId=...`: session and Origin are verified before
+  the upgrade, the prep entry is deleted before use, and the backend relays
+  raw bytes to Proxmox `/vncwebsocket`. The `vncticket` exists only in the
+  backend->Proxmox URL and never reaches the browser.
+- The tunnel is a transparent binary relay (no `user:ticket` auth frame, which
+  belongs only to the Shell termproxy path): the RFB/VeNCrypt/TLS+PLAIN
+  handshake is performed end-to-end by noVNC with the temporary credentials.
+- noVNC 1.7.0 is vendored unmodified under `public/vendor/novnc/` (core +
+  pako, MPL-2.0/MIT, see `THIRD_PARTY_NOTICES.md`) and loaded on demand with a
+  dynamic `import()` from `public/vnc-console.js` (no bundler, no npm
+  dependencies, no CSP changes).
+- `window.VNCConsole.close()` is the single idempotent cleanup point
+  (RFB disconnect, credentials and prepId wiped, fullscreen reset); it is
+  also called on logout, session expiry and password change.
+- Out of scope in V1: clipboard, serial console, serial0 fallback, Console
+  button on dashboard cards, SPICE.
+
 ## 7. PWA and caching (sw.js)
 
-- Versioned cache (`CACHE = 'nodepilot-v1'`, bumped per release that changes
+- Versioned cache (`CACHE = 'nodepilot-v4'`, bumped per release that changes
   frontend assets); `index.html` references assets with incremental query
   versions (`app.js?v=N`, `style.css?v=N`, `i18n.js?v=N`).
 - HTML navigations: network-first, cache fallback only when offline.

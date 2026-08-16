@@ -110,6 +110,9 @@ function stopFrontendWork() {
   if (shellWs) {
     try { closeShell(); } catch (_) { /* ignora */ }
   }
+  if (window.VNCConsole) {
+    try { window.VNCConsole.close(); } catch (_) { /* ignora */ }
+  }
   if (detailState.key) closeGuestDetail();
   document.querySelectorAll('.modal-backdrop').forEach((m) => {
     if (m.id !== 'authBackdrop') m.hidden = true;
@@ -1194,6 +1197,16 @@ document.addEventListener('click', (e) => {
     openShell(shellKey);
     return;
   }
+  const vncBtn = e.target.closest('[data-vnc]');
+  if (vncBtn) {
+    const vncKey = vncBtn.dataset.vnc;
+    /* come per la Shell: il Guest Detail viene chiuso prima della Console */
+    if (detailState.key) {
+      closeGuestDetail();
+    }
+    if (window.VNCConsole) window.VNCConsole.open(vncKey);
+    return;
+  }
 });
 
 $('shellModal').querySelector('[data-close]').onclick = closeShell;
@@ -1753,8 +1766,9 @@ function openGuestDetail(serverId, node, type, vmid) {
   const btnStart = '<button class="ghost-btn" data-action="start" data-key="' + dk + '" ' + (isRun ? 'disabled' : '') + '>' + t('action.confirm.start') + '</button>';
   const btnStop = '<button class="danger-btn" data-action="stop" data-key="' + dk + '" ' + (!isRun ? 'disabled' : '') + '>' + t('action.confirm.stop') + '</button>';
   const btnReboot = '<button class="ghost-btn" data-action="reboot" data-key="' + dk + '" ' + (!isRun ? 'disabled' : '') + '>' + t('action.confirm.reboot') + '</button>';
+  const btnVnc = type === 'qemu' ? '<button class="primary-btn" data-vnc="' + dk + '" ' + (!isRun ? 'disabled title="' + t('vnc.needStart') + '"' : '') + '>🖥️ ' + t('vnc.open') + '</button>' : '';
   const btnShell = type === 'lxc' ? '<button class="primary-btn" data-shell="' + dk + '" ' + (!isRun ? 'disabled' : '') + '>>_ ' + t('gd.shell') + '</button>' : '';
-  $('guestDetailActions').innerHTML = btnStart + btnStop + btnReboot + btnShell;
+  $('guestDetailActions').innerHTML = btnStart + btnStop + btnReboot + btnVnc + btnShell;
 
   $('guestDetailBackdrop').classList.add('active');
   $('guestDetailLoading').classList.remove('hidden');
@@ -2335,6 +2349,11 @@ document.querySelectorAll('.modal-backdrop').forEach((m) => {
     });
     return;
   }
+  /* La Console VNC ha il suo ciclo di vita in vnc-console.js (close):
+     qui si evita SOLO il binding generico, il wiring e' nel suo modulo. */
+  if (m.id === 'vncModal') {
+    return;
+  }
   /* modale cambio password: chiusura con cleanup dei campi; bloccata
      durante il submit (changePasswordBusy) */
   if (m.id === 'changePasswordModal') {
@@ -2717,6 +2736,7 @@ document.addEventListener('keydown', (e) => {
   if (!$('snapshotCreateModal').hidden) { e.preventDefault(); closeSnapshotCreateModal(); return; }
   if (detailState.key) return;             /* gestito dal Guest Detail */
   if (!$('shellModal').hidden) return;     /* la Shell non si chiude con ESC */
+  if (!$('vncModal').hidden) return;       /* la Console non si chiude con ESC */
   if (!$('changePasswordModal').hidden) {  /* durante il submit ESC non fa nulla */
     if (changePasswordBusy) return;
     closeChangePasswordModal();

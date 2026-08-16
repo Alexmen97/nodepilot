@@ -75,6 +75,7 @@ offered; the tour can be skipped or restarted any time from
 - **Guest Detail panel** — overview, CPU/RAM RRD charts (1h / 24h / 7d / 30d), configuration, last 25 tasks, Backup & Snapshot tab
 - **Proxmox logs** — tasks, system log and cluster log, with filters and per-task detail
 - **LXC Shell** — in-browser terminal via xterm.js (termproxy/vncwebsocket), for privileged and unprivileged containers
+- **VNC Console (QEMU)** — graphical noVNC console for running VMs from the Guest Detail, proxied through the dashboard (no direct VNC ports, no Proxmox login in the browser)
 - **Health Center** — healthy/warning/critical status, thresholds, expected state and task alerts
 - **Backup & Snapshot Manager V1** — backups, snapshots, storages and scheduled jobs, with guided creation and UPID tracking (read + create)
 - **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
@@ -154,8 +155,11 @@ verifyTls), or create `config.json` from `config.example.json`:
   the browser to the login screen.
 - Security headers on every response (CSP, X-Frame-Options, nosniff,
   Referrer-Policy) and Origin validation on authenticated mutating requests
-  and the Shell WebSocket.
+  and the Shell/VNC WebSockets.
 - Passwords, hashes, cookies and session ids are never logged.
+- VNC console tickets are single-use, expire after 60 s and live only in
+  backend memory; temporary RFB credentials live only in browser memory and
+  are never persisted.
 
 Operators: expose NodePilot only on a trusted local network or behind a
 reverse proxy with HTTPS, and keep `config.json`, `auth.json` and

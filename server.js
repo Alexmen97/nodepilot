@@ -16,6 +16,13 @@ let state = { tourCompleted: false, tourCompletedVersion: 0 };
 let statusCache = null;
 let statusCacheAt = 0;
 
+/* ---------------- VNC console (noVNC, VM QEMU) ---------------- */
+
+const VNC_PREP_TTL_MS = 60 * 1000;
+/* prepId opaco (crypto.randomBytes) -> dati vncproxy PVE. Solo in memoria,
+   mai persistito; single-use con TTL. ticket/port non lasciano il backend. */
+const vncPreps = new Map();
+
 /* ---------------- config ---------------- */
 
 function loadConfig() {
@@ -1502,6 +1509,72 @@ const server = http.createServer(async (req, res) => {
       return json(res, { ok: true, upid: upid || null, taskDone });
     }
 
+    /* Console VNC per VM QEMU: due fasi.
+       Fase 1 (questo endpoint): valida, crea il vncproxy PVE, genera un prepId
+       opaco casuale e restituisce SOLO prepId + credenziali RFB temporanee.
+       Eredita guard di sessione, Origin validation, security headers e no-store. */
+    if (p === '/api/vnc/prep' && req.method === 'POST') {
+      const b = await readBody(req);
+      const serverId = typeof b.serverId === 'string' ? b.serverId : '';
+      const node = typeof b.node === 'string' ? b.node.trim() : '';
+      const vmid = Number(b.vmid);
+      const s = config.servers.find((x) => x.id === serverId);
+      if (!s || !isValidNodeName(node) || !Number.isInteger(vmid) || vmid < 1) {
+        return json(res, { ok: false, code: 'INVALID_REQUEST', error: 'Richiesta non valida' }, 400);
+      }
+      /* cleanup lazy delle voci scadute (nessun timer globale) */
+      const vncNow = Date.now();
+      for (const [k, v] of vncPreps) {
+        if (vncNow - v.createdAt > VNC_PREP_TTL_MS) vncPreps.delete(k);
+      }
+      try {
+        const vp = await api(s, 'POST', '/api2/json/nodes/' + encodeURIComponent(node) + '/qemu/' + vmid + '/vncproxy', { websocket: 1 });
+        if (!vp || !vp.ticket || !vp.port) {
+          return json(res, { ok: false, code: 'CONSOLE_UNAVAILABLE', error: 'Console non disponibile' }, 409);
+        }
+        const prepId = crypto.randomBytes(32).toString('base64url');
+        vncPreps.set(prepId, {
+          serverId: s.id,
+          node,
+          vmid,
+          ticket: vp.ticket,
+          port: vp.port,
+          user: typeof vp.user === 'string' ? vp.user : '',
+          password: typeof vp.password === 'string' ? vp.password : null,
+          createdAt: Date.now(),
+        });
+        /* su PVE >= 9.1.8 esiste il password dedicato (il ticket resta backend-only);
+           su PVE precedenti fallback al ticket, necessario all'handshake RFB. */
+        return json(res, {
+          ok: true,
+          prepId,
+          credentials: {
+            username: typeof vp.user === 'string' ? vp.user : '',
+            password: typeof vp.password === 'string' ? vp.password : vp.ticket,
+          },
+          ttlMs: VNC_PREP_TTL_MS,
+        });
+      } catch (e) {
+        if (e.pveStatus === 403) {
+          return json(res, { ok: false, code: 'VNC_FORBIDDEN', error: 'Permessi insufficienti' }, 403);
+        }
+        if (e.pveStatus === 404 || /does not exist/i.test(e.message)) {
+          return json(res, { ok: false, code: 'GUEST_NOT_FOUND', error: 'Guest non trovato' }, 404);
+        }
+        if (e.code && ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'EHOSTUNREACH', 'ECONNRESET'].includes(e.code)) {
+          return json(res, { ok: false, code: 'PROXMOX_UNAVAILABLE', error: 'Connessione a Proxmox non disponibile' }, 502);
+        }
+        /* qualsiasi altro errore PVE su vncproxy (es. VM ferma o display seriale):
+           console non disponibile, messaggio PVE reale solo nei log del server */
+        if (e.pveStatus) {
+          console.error('[vnc] prep fallito server=' + s.id + ' node=' + node + ' vmid=' + vmid + ' pveStatus=' + e.pveStatus + ' motivo=' + String(e.message).slice(0, 120));
+          return json(res, { ok: false, code: 'CONSOLE_UNAVAILABLE', error: 'Console non disponibile' }, 409);
+        }
+        console.error('[vnc] prep fallito server=' + s.id + ' node=' + node + ' vmid=' + vmid + ' motivo=' + String(e.message).slice(0, 120));
+        return json(res, { ok: false, code: 'VNC_INTERNAL_ERROR', error: 'Errore interno' }, 500);
+      }
+    }
+
     if (p.startsWith('/api/')) return json(res, { error: 'Non trovato' }, 404);
     return serveStatic(req, res, p);
   } catch (e) {
@@ -1513,8 +1586,94 @@ const server = http.createServer(async (req, res) => {
 
 const { WebSocket: PveWebSocket, WebSocketServer } = require('ws');
 
+/* risposta di rifiuto sul socket prima dell'upgrade (stesso formato della Shell) */
+function wsUpgradeError(socket, statusLine) {
+  socket.write('HTTP/1.1 ' + statusLine + '\r\n' + rawSecurityHeaders() + '\r\n');
+  socket.destroy();
+}
+
+/* ---------- proxy WebSocket per la console VNC (QEMU, noVNC) ---------- */
+
+/* Fase 2: tunnel binario trasparente. Il client presenta il prepId della fase 1;
+   sessione e Origin sono verificate PRIMA dell'upgrade; la voce prep e'
+   single-use con TTL. Nessun auth frame (il frame user:ticket e' solo Shell),
+   l'handshake RFB/VeNCrypt e' gestito da noVNC end-to-end. */
+async function handleVncUpgrade(req, socket, head, url) {
+  if (!getSession(req)) {
+    wsUpgradeError(socket, '401 Unauthorized');
+    return;
+  }
+  const wsOrigin = req.headers.origin || req.headers.referer;
+  if (wsOrigin && !isSameOriginHeader(wsOrigin, req)) {
+    wsUpgradeError(socket, '403 Forbidden');
+    return;
+  }
+  const prepId = url.searchParams.get('prepId');
+  if (!prepId) {
+    wsUpgradeError(socket, '400 Bad Request');
+    return;
+  }
+  const prep = vncPreps.get(prepId);
+  if (!prep) {
+    wsUpgradeError(socket, '404 Not Found');
+    return;
+  }
+  if (Date.now() - prep.createdAt > VNC_PREP_TTL_MS) {
+    vncPreps.delete(prepId);
+    wsUpgradeError(socket, '410 Gone');
+    return;
+  }
+  /* single-use: la voce viene eliminata PRIMA di usare il ticket */
+  vncPreps.delete(prepId);
+  const s = config.servers.find((x) => x.id === prep.serverId);
+  if (!s || !s._session) {
+    wsUpgradeError(socket, '502 Bad Gateway');
+    return;
+  }
+  try {
+    /* il vncticket esiste SOLO in questo URL backend->Proxmox: non raggiunge mai il browser */
+    const pveUrl = s.url.replace(/\/+$/, '') + '/api2/json/nodes/' + encodeURIComponent(prep.node) + '/qemu/' + prep.vmid + '/vncwebsocket?port=' + encodeURIComponent(prep.port) + '&vncticket=' + encodeURIComponent(prep.ticket);
+    const pveWs = new PveWebSocket(pveUrl, {
+      headers: {
+        Cookie: 'PVEAuthCookie=' + s._session.ticket,
+        Origin: s.url.replace(/\/+$/, ''),
+      },
+      rejectUnauthorized: s.verifyTls !== false,
+      perMessageDeflate: false,
+      handshakeTimeout: 15000,
+    });
+    await new Promise((resolve, reject) => {
+      pveWs.once('open', resolve);
+      pveWs.once('error', reject);
+    });
+    console.log('[vnc] upstream connesso');
+    const clientWs = new WebSocketServer({ noServer: true });
+    clientWs.handleUpgrade(req, socket, head, (ws) => {
+      ws.binaryType = 'arraybuffer';
+      console.log('[vnc] client connesso');
+      ws.on('message', (data) => {
+        if (pveWs.readyState === PveWebSocket.OPEN) pveWs.send(data);
+      });
+      ws.on('close', (code) => { console.log('[vnc] client chiuso', code); pveWs.close(); });
+      ws.on('error', (e) => { console.log('[vnc] client error', e.message); pveWs.close(); });
+      pveWs.on('message', (data) => {
+        if (ws.readyState === ws.OPEN) ws.send(data);
+      });
+      pveWs.on('close', (code) => { console.log('[vnc] pve chiuso', code); ws.close(); });
+      pveWs.on('error', (e) => { console.log('[vnc] pve error', e.message); ws.close(); });
+    });
+  } catch (e) {
+    console.error('[vnc] errore upgrade:', e.message);
+    wsUpgradeError(socket, '502 Bad Gateway');
+  }
+}
+
 server.on('upgrade', async (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
+  /* dispatcher: Shell LXC (handler invariato) e Console VNC QEMU */
+  if (url.pathname === '/api/vnc/ws') {
+    return handleVncUpgrade(req, socket, head, url);
+  }
   if (url.pathname !== '/api/shell/ws') {
     socket.destroy();
     return;
