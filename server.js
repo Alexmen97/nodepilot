@@ -362,6 +362,9 @@ async function api(server, method, apiPath, body) {
 const netSamples = new Map();
 
 function pickGuest(st) {
+  /* Health V2: PVE 9.2 rinomina free_mem in freemem; leggiamo entrambi per
+     compatibilità con le versioni precedenti. Zero nuove chiamate PVE. */
+  const freememRaw = st.freemem !== undefined && st.freemem !== null ? st.freemem : st.free_mem;
   return {
     status: st.status || 'unknown',
     cpu: st.cpu || 0,
@@ -370,7 +373,7 @@ function pickGuest(st) {
     maxmem: st.maxmem || 0,
     /* metrica guest affidabile solo con QEMU Guest Agent; null se assente.
        Pass-through additivo: nessuna nuova chiamata PVE. */
-    free_mem: Number.isFinite(Number(st.free_mem)) ? Number(st.free_mem) : null,
+    freemem: Number.isFinite(Number(freememRaw)) ? Number(freememRaw) : null,
     balloon: Number.isFinite(Number(st.balloon)) ? Number(st.balloon) : null,
     maxballoon: Number.isFinite(Number(st.maxballoon)) ? Number(st.maxballoon) : null,
     disk: st.disk || 0,
@@ -378,6 +381,12 @@ function pickGuest(st) {
     netin: st.netin || 0,
     netout: st.netout || 0,
     uptime: st.uptime || 0,
+    /* Health V2: pass-through additivo dei soli campi già presenti nella
+       risposta status/current (ha/qmpstatus/lock/agent). */
+    ha: st.ha && typeof st.ha === 'object' ? { managed: pveFlag(st.ha.managed) } : null,
+    qmpstatus: typeof st.qmpstatus === 'string' ? st.qmpstatus : null,
+    lock: typeof st.lock === 'string' ? st.lock : null,
+    agent: Number.isFinite(Number(st.agent)) ? Number(st.agent) : null,
   };
 }
 
@@ -394,6 +403,19 @@ function netRate(key, netin, netout, now) {
     in: Math.max(0, (netin - prev.netin) / dt),
     out: Math.max(0, (netout - prev.netout) / dt),
   };
+}
+
+/* Health V2: loadavg PVE può essere array [1,5,15] o, su PVE 9.2, oggetto
+   {"0","1","2"}. Normalizza in [n1,n5,n15] oppure null se non interpretabile. */
+function normalizeLoadavg(v) {
+  const nums = [];
+  if (Array.isArray(v)) {
+    for (const x of v) nums.push(Number(x));
+  } else if (v && typeof v === 'object') {
+    for (const k of ['0', '1', '2']) nums.push(Number(v[k]));
+  }
+  if (nums.length !== 3 || nums.some((x) => !Number.isFinite(x))) return null;
+  return nums;
 }
 
 async function collectServer(server) {
@@ -468,6 +490,13 @@ async function collectServer(server) {
       rootfs: (nodeStatus.rootfs && Number.isFinite(Number(nodeStatus.rootfs.total)) && Number.isFinite(Number(nodeStatus.rootfs.used)) && Number.isFinite(Number(nodeStatus.rootfs.avail)))
         ? { total: Number(nodeStatus.rootfs.total), used: Number(nodeStatus.rootfs.used), avail: Number(nodeStatus.rootfs.avail) }
         : null,
+      /* Health V2: swap/loadavg/memoria disponibile dalla stessa chiamata
+         /nodes/{node}/status già eseguita. ZERO nuove chiamate PVE. */
+      swap: (nodeStatus.swap && Number.isFinite(Number(nodeStatus.swap.total)) && Number.isFinite(Number(nodeStatus.swap.used)))
+        ? { total: Number(nodeStatus.swap.total), used: Number(nodeStatus.swap.used), free: Number(nodeStatus.swap.free) }
+        : null,
+      loadavg: normalizeLoadavg(nodeStatus.loadavg),
+      memoryAvail: Number.isFinite(Number(nodeStatus.memory && nodeStatus.memory.available)) ? Number(nodeStatus.memory.available) : null,
       vms,
       lxc: cts,
     });
@@ -567,6 +596,38 @@ function safeGuestModes() {
   const h = config.health && typeof config.health === 'object' ? config.health : {};
   const m = h.guestModes && typeof h.guestModes === 'object' && !Array.isArray(h.guestModes) ? h.guestModes : {};
   return m;
+}
+
+/* Health V2.0 Core: soglie configurabili (solo storage, età backup, swap).
+   Default centralizzati; validazione warning < critical con range sensati. */
+const HEALTH_SETTING_DEFAULTS = {
+  storage: { warning: 85, critical: 90 },
+  backupAge: { warningDays: 7, criticalDays: 14 },
+  swap: { warning: 80, critical: 90 },
+};
+
+const HEALTH_SETTING_VALIDATORS = {
+  storage: (v) => v.warning >= 1 && v.warning <= 99 && v.critical >= 2 && v.critical <= 100 && v.warning < v.critical,
+  backupAge: (v) => v.warningDays >= 1 && v.warningDays <= 365 && v.criticalDays >= 2 && v.criticalDays <= 365 && v.warningDays < v.criticalDays,
+  swap: (v) => v.warning >= 1 && v.warning <= 99 && v.critical >= 2 && v.critical <= 100 && v.warning < v.critical,
+};
+
+/* merge default + config.json; un gruppo invalido (es. config editata a mano)
+   ricade sui default. Non tocca mai health.guestModes. */
+function safeHealthSettings() {
+  const h = config.health && typeof config.health === 'object' ? config.health : {};
+  const s = h.settings && typeof h.settings === 'object' && !Array.isArray(h.settings) ? h.settings : {};
+  const out = {};
+  for (const [group, def] of Object.entries(HEALTH_SETTING_DEFAULTS)) {
+    const user = s[group] && typeof s[group] === 'object' && !Array.isArray(s[group]) ? s[group] : {};
+    const merged = {};
+    for (const key of Object.keys(def)) {
+      const raw = user[key];
+      merged[key] = Number.isFinite(Number(raw)) ? Number(raw) : def[key];
+    }
+    out[group] = HEALTH_SETTING_VALIDATORS[group](merged) ? merged : { ...def };
+  }
+  return out;
 }
 
 /* ---------- Backup & Snapshot Manager (Fase 1: SOLO lettura) ---------- */
@@ -687,6 +748,155 @@ async function guestExists(server, node, vmid) {
     }
   }
   return false;
+}
+
+/* ---------- Health V2.0 Core: helper di sola lettura ---------- */
+
+/* Storage: GET /nodes/{node}/storage per ogni nodo; entry per TUTTI gli storage
+   (non solo backup). Dedup shared per nome (elenco nodi in "nodes"), storage
+   node-local per nodo. Errori parziali per nodo, mai stack trace. */
+async function healthStorageTargets(server) {
+  const nodes = await api(server, 'GET', '/api2/json/nodes');
+  const results = await Promise.allSettled((nodes || []).map(async (n) => {
+    const list = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(n.node) + '/storage');
+    return { node: n.node, list: list || [] };
+  }));
+  const errors = [];
+  const entries = new Map();
+  const nodeSets = new Map();
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      errors.push({ serverId: server.id, serverName: server.name, error: r.reason.message });
+      continue;
+    }
+    for (const raw of r.value.list || []) {
+      const shared = pveFlag(raw.shared);
+      const key = shared ? raw.storage : raw.storage + '@' + r.value.node;
+      if (!entries.has(key)) {
+        entries.set(key, {
+          serverId: server.id,
+          serverName: server.name,
+          node: r.value.node,
+          storage: pveString(raw.storage),
+          type: pveString(raw.type),
+          content: storageContentList(raw.content),
+          total: pveNumber(raw.total),
+          used: pveNumber(raw.used),
+          avail: pveNumber(raw.avail),
+          usedFraction: Number.isFinite(Number(raw.used_fraction)) ? Number(raw.used_fraction) : null,
+          active: pveFlag(raw.active),
+          enabled: pveFlag(raw.enabled),
+          shared,
+        });
+        nodeSets.set(key, [r.value.node]);
+      } else if (!nodeSets.get(key).includes(r.value.node)) {
+        nodeSets.get(key).push(r.value.node);
+      }
+    }
+  }
+  const storages = [];
+  for (const [key, entry] of entries) {
+    const list = nodeSets.get(key) || [];
+    if (list.length > 1) entry.nodes = list.slice().sort();
+    storages.push(entry);
+  }
+  return { storages, errors };
+}
+
+/* ZFS: GET /nodes/{node}/disks/zfs + dettaglio per pool. Un nodo senza ZFS
+   (lista vuota o errore) NON è un errore Health: viene semplicemente saltato. */
+async function healthZfsPools(server) {
+  const nodes = await api(server, 'GET', '/api2/json/nodes');
+  const pools = [];
+  for (const n of (nodes || [])) {
+    let list = null;
+    try {
+      list = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(n.node) + '/disks/zfs');
+    } catch (_) {
+      continue; /* nodo senza ZFS o permessi: nessun errore Health per il nodo */
+    }
+    for (const raw of (list || [])) {
+      const pool = {
+        serverId: server.id,
+        serverName: server.name,
+        node: n.node,
+        name: pveString(raw.name),
+        size: pveNumber(raw.size),
+        alloc: pveNumber(raw.alloc),
+        free: pveNumber(raw.free),
+        frag: pveNumber(raw.frag),
+        health: pveString(raw.health),
+        dedup: pveNumber(raw.dedup),
+        detail: null,
+        detailError: null,
+      };
+      try {
+        const d = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(n.node) + '/disks/zfs/' + encodeURIComponent(raw.name));
+        pool.detail = {
+          state: pveString(d.state),
+          errors: pveString(d.errors),
+          scan: pveString(d.scan),
+          status: pveString(d.status),
+          action: pveString(d.action),
+        };
+      } catch (e) {
+        pool.detailError = e.message; /* mai stack trace */
+      }
+      pools.push(pool);
+    }
+  }
+  return pools;
+}
+
+/* Cluster/HA: GET /cluster/status; solo se cluster, HA status corrente e
+   risorse. Standalone -> { cluster:false, ha:null } senza warning. */
+async function healthClusterEntry(server) {
+  const status = await api(server, 'GET', '/api2/json/cluster/status');
+  const entries = Array.isArray(status) ? status : [];
+  const clusterEntry = entries.find((e) => e && e.type === 'cluster');
+  const nodeEntries = entries.filter((e) => e && e.type === 'node');
+  const entry = {
+    serverId: server.id,
+    serverName: server.name,
+    cluster: !!clusterEntry,
+    quorate: clusterEntry ? (pveFlag(clusterEntry.quorate) ? 1 : 0) : null,
+    nodes: nodeEntries.map((n) => ({ name: pveString(n.name) || pveString(n.id), online: !(n.online === 0 || n.online === '0' || n.online === false) })),
+    ha: null,
+    haResources: [],
+  };
+  if (entry.cluster) {
+    try {
+      const ha = await api(server, 'GET', '/api2/json/cluster/ha/status/current');
+      /* su installazioni senza HA attivo la risposta non contiene manager_status:
+         ha resta null e nessun alert viene generato */
+      if (ha && typeof ha === 'object' && (ha.manager_status || Array.isArray(ha.services))) {
+        entry.ha = {
+          managerStatus: pveString(ha.manager_status),
+          master: pveString(ha.master),
+          services: Array.isArray(ha.services) ? ha.services.map((sv) => ({
+            sid: pveString(sv.sid),
+            type: pveString(sv.type),
+            node: pveString(sv.node),
+            state: pveString(sv.state),
+            status: pveString(sv.status),
+          })) : [],
+        };
+      }
+    } catch (_) {
+      entry.ha = null;
+    }
+    try {
+      const res = await api(server, 'GET', '/api2/json/cluster/ha/resources?type=vm');
+      entry.haResources = Array.isArray(res) ? res.map((r) => ({
+        sid: pveString(r.sid),
+        type: pveString(r.type),
+        state: pveString(r.state),
+      })) : [];
+    } catch (_) {
+      entry.haResources = [];
+    }
+  }
+  return entry;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1344,7 +1554,7 @@ const server = http.createServer(async (req, res) => {
         autoRefreshEnabled: config.autoRefreshEnabled !== false,
         theme: config.theme || 'system',
         language: config.language || 'it',
-        health: { guestModes: safeGuestModes() },
+        health: { guestModes: safeGuestModes(), settings: safeHealthSettings() },
         tourCompleted: state.tourCompleted,
         tourCompletedVersion: state.tourCompletedVersion || 0,
       });
@@ -1405,6 +1615,113 @@ const server = http.createServer(async (req, res) => {
       }
       saveConfig();
       return json(res, { ok: true, key, mode });
+    }
+
+    /* ---------- Health V2.0 Core: endpoint di sola lettura + settings ---------- */
+
+    /* GET /api/health/storage[?serverId=<id>]
+       Usage/attività di TUTTI gli storage per server. Errori parziali in
+       "errors" (pattern multi-source dei Log), mai stack trace. */
+    if (p === '/api/health/storage' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim() || null;
+      if (serverId && !config.servers.some((s) => s.id === serverId)) {
+        return json(res, { error: 'Server non trovato' }, 404);
+      }
+      const targets = serverId ? config.servers.filter((s) => s.id === serverId) : config.servers;
+      const storages = [];
+      const errors = [];
+      await Promise.all(targets.map(async (s) => {
+        try {
+          const r = await healthStorageTargets(s);
+          storages.push(...r.storages);
+          errors.push(...r.errors);
+        } catch (e) {
+          errors.push({ serverId: s.id, serverName: s.name, error: e.message });
+        }
+      }));
+      return json(res, { ok: true, storages, errors });
+    }
+
+    /* GET /api/health/zfs[?serverId=<id>]
+       Pool ZFS + dettaglio (state/errors/scan). Nodo senza ZFS = nessun errore
+       Health, semplicemente nessun pool per quel nodo. */
+    if (p === '/api/health/zfs' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim() || null;
+      if (serverId && !config.servers.some((s) => s.id === serverId)) {
+        return json(res, { error: 'Server non trovato' }, 404);
+      }
+      const targets = serverId ? config.servers.filter((s) => s.id === serverId) : config.servers;
+      const pools = [];
+      const errors = [];
+      await Promise.all(targets.map(async (s) => {
+        try {
+          pools.push(...await healthZfsPools(s));
+        } catch (e) {
+          errors.push({ serverId: s.id, serverName: s.name, error: e.message });
+        }
+      }));
+      return json(res, { ok: true, pools, errors });
+    }
+
+    /* GET /api/health/cluster[?serverId=<id>]
+       Quorum (solo cluster) e stato HA. Standalone: cluster=false, nessun
+       warning "cluster non disponibile". */
+    if (p === '/api/health/cluster' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim() || null;
+      if (serverId && !config.servers.some((s) => s.id === serverId)) {
+        return json(res, { error: 'Server non trovato' }, 404);
+      }
+      const targets = serverId ? config.servers.filter((s) => s.id === serverId) : config.servers;
+      const serversOut = [];
+      const errors = [];
+      await Promise.all(targets.map(async (s) => {
+        try {
+          serversOut.push(await healthClusterEntry(s));
+        } catch (e) {
+          errors.push({ serverId: s.id, serverName: s.name, error: e.message });
+        }
+      }));
+      return json(res, { ok: true, servers: serversOut, errors });
+    }
+
+    /* POST /api/health/settings
+       Soglie configurabili V2.0: storage %, età backup giorni, swap %.
+       Body parziale ammesso; {reset:true} ripristina i default. Validazione
+       warning < critical con range sensati. Mai health.guestModes. */
+    if (p === '/api/health/settings' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (b.reset === true) {
+        const h = config.health && typeof config.health === 'object' ? config.health : {};
+        config.health = { ...h, settings: JSON.parse(JSON.stringify(HEALTH_SETTING_DEFAULTS)) };
+        saveConfig();
+        return json(res, { ok: true, settings: safeHealthSettings() });
+      }
+      const current = safeHealthSettings();
+      const candidate = JSON.parse(JSON.stringify(current));
+      const provided = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+      for (const group of Object.keys(HEALTH_SETTING_DEFAULTS)) {
+        const pg = provided[group];
+        if (pg === undefined || pg === null) continue;
+        if (typeof pg !== 'object' || Array.isArray(pg)) {
+          return json(res, { error: 'Impostazioni non valide: ' + group }, 400);
+        }
+        for (const key of Object.keys(candidate[group])) {
+          if (pg[key] !== undefined) {
+            const v = Number(pg[key]);
+            if (!Number.isFinite(v)) return json(res, { error: 'Valore non valido per ' + group + '.' + key }, 400);
+            candidate[group][key] = v;
+          }
+        }
+      }
+      for (const [group, valid] of Object.entries(HEALTH_SETTING_VALIDATORS)) {
+        if (!valid(candidate[group])) {
+          return json(res, { error: 'Impostazioni non valide per ' + group + ': warning < critical e range consentiti' }, 400);
+        }
+      }
+      const h = config.health && typeof config.health === 'object' ? config.health : {};
+      config.health = { ...h, settings: candidate };
+      saveConfig();
+      return json(res, { ok: true, settings: safeHealthSettings() });
     }
 
     if (p === '/api/autorefresh' && req.method === 'POST') {

@@ -61,6 +61,8 @@ nodepilot
 | POST | `/api/auth/change-password` | change the dashboard password (auth required; invalidates all sessions) |
 | POST | `/api/tasks/status` | one request / one response task status |
 | POST | `/api/health/prefs` | Health Center expected state per guest |
+| GET | `/api/health/storage`, `/api/health/zfs`, `/api/health/cluster` | Health V2 read-only sources (storage usage, ZFS pools, cluster/HA) |
+| POST | `/api/health/settings` | Health V2 configurable thresholds (storage %, backup age days, swap %) |
 | POST | `/api/auth/login`, `/api/auth/logout`; GET `/api/auth/session` | local authentication |
 | POST | `/api/vnc/prep` | QEMU console: creates the Proxmox vncproxy and returns an opaque single-use prepId + temporary RFB credentials |
 | WS | `/api/shell/ws` | LXC shell tunnel (session checked before upgrade) |
@@ -167,7 +169,7 @@ noVNC (public/vendor/novnc) -> dashboard backend -> Proxmox /vncproxy
 
 ## 7. PWA and caching (sw.js)
 
-- Versioned cache (`CACHE = 'nodepilot-v4'`, bumped per release that changes
+- Versioned cache (`CACHE = 'nodepilot-v5'`, bumped per release that changes
   frontend assets); `index.html` references assets with incremental query
   versions (`app.js?v=N`, `style.css?v=N`, `i18n.js?v=N`).
 - HTML navigations: network-first, cache fallback only when offline.
@@ -193,21 +195,53 @@ noVNC (public/vendor/novnc) -> dashboard backend -> Proxmox /vncproxy
   upgrade.
 - V1 limits: single account, no MFA, no email recovery, no persisted tokens.
 
-## 9. Health Center
+## 9. Health Center (V2)
 
-- Third main view, read-only, derived from the already-collected status data:
-  no parallel polling and no new periodic Proxmox calls.
-- `evaluateHealth(status, guestModes, taskAlerts)` is pure (no side effects);
-  thresholds are centralized in `HEALTH_THRESHOLDS`.
-- Anti-flapping: 2 consecutive samples for CPU/RAM; rootfs/disk/status alerts
-  are immediate.
+- Read-only view derived from two source tiers: the already-collected status
+  data (zero extra Proxmox calls for node/guest metrics) and dedicated
+  on-demand sources (`/api/health/storage`, `/api/health/zfs`,
+  `/api/health/cluster`, backup archives/jobs) fetched only while the view is
+  open with frontend TTLs (60 s storage/cluster/backups, 120 s ZFS) — no
+  second polling loop and no new global timers.
+- `evaluateHealth(status, guestModes, taskAlerts, extras, settings)` is pure
+  (no side effects). Node metrics (CPU, RAM, rootfs, swap, load average) are
+  pass-through from the existing `/nodes/{node}/status` call; PVE 9.2
+  `freemem` is normalized alongside the legacy `free_mem`; `ha`, `qmpstatus`,
+  `lock` and `agent` are passed through when present.
+- Every alert carries a stable id, severity (`critical|warning|info`, no
+  numeric score), category, i18n title/description, context (server, node,
+  guest/storage/pool), source and a detail block ("why am I seeing this?")
+  with current value, threshold, source and a non-destructive suggestion.
+- Anti-flapping: quantitative metrics (CPU, RAM, swap, storage, load) require
+  2 consecutive samples with stepped downgrade; state events (node offline,
+  ZFS degraded, HA error) raise immediately and clear only after 1–2
+  consecutive healthy observations; backup failures are events inside the
+  existing 24 h task window.
+- ZFS: pool health from `/nodes/{node}/disks/zfs` (+ per-pool detail for
+  state/errors/scan); DEGRADED/FAULTED/UNAVAIL and errors are critical,
+  capacity reuses the storage thresholds, scrub results are parsed best
+  effort (INFO if clean, WARNING if errors, nothing if unparsable). Nodes
+  without ZFS are simply omitted, never an error.
+- Cluster/HA: `/cluster/status` distinguishes standalone from cluster;
+  quorum loss is critical, HA service `error` is critical and a stopped HA
+  resource is a warning. Standalone installs get no cluster section and no
+  false warnings. Replication, SMART, disk temperatures and sensors are out
+  of scope for V2.
+- Backup health: last archive age per guest from the storage-content source
+  of truth (WARNING after the configurable warning days, CRITICAL after the
+  critical days); guests covered by an enabled job without archives yet and
+  guests without any job stay INFO (no false critical).
+- Configurable thresholds: only storage usage (%), backup age (days) and swap
+  (%) via `POST /api/health/settings`, persisted in `config.json →
+  health.settings` (never touching `health.guestModes`), with defaults
+  85/90, 7/14, 80/90 and a "reset defaults" action in Settings → Monitoring.
 - Expected state per guest: `Manual` (default) / `Always On` (stopped →
   critical) / `Ignore`.
 - Task alerts: on-demand `/api/logs/tasks` only while the view is open, 24 h
   window, allowlist (backup → critical; start/stop/reboot/migrate/snapshot/
   restore/clone → warning; `vncproxy`, `vncshell`, `aptupdate`,
   `push_file` never alert).
-- QEMU RAM prefers the guest-agent `free_mem`; without it, `mem > maxmem`
+- QEMU RAM prefers the guest-agent `freemem`; without it, `mem > maxmem`
   means RAM is not evaluable (no false critical). Disk health is LXC-only.
 
 ## 10. Backup & Snapshot Manager V1

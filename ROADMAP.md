@@ -28,6 +28,13 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [ ] screenshot del README
 - [x] CI base su GitHub Actions
 
+### Health Center V2.0 Core
+
+- [ ] Health Center V2.0 Core — Node Health (swap/load), Storage, ZFS,
+  Backup e Cluster/HA, alert model V2, anti-flap V2, soglie configurabili
+  minime e UI a sezioni con filtri. Implementazione locale completata,
+  release in attesa di review.
+
 ### Stabilization & Hardening V1.1
 
 Consolidamento del progetto prima delle prossime macro-feature:

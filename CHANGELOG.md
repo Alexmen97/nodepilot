@@ -6,6 +6,28 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## Unreleased — Health Center V2.0 Core
+
+Status: **In sviluppo** — implementazione completata, non ancora rilasciata
+
+- Node Health V2: swap e load average dal pass-through dei dati già raccolti
+  (zero nuove chiamate PVE al normale `/api/status`);
+- fix RAM guest-agent per PVE 9.2 (`freemem` con compatibilità `free_mem`) e
+  pass-through di `ha`, `qmpstatus`, `lock`, `agent`;
+- Storage Health (usage, offline, disabled, dedup shared) e ZFS Health
+  (DEGRADED/FAULTED/UNAVAIL, errori, capacità, scrub best-effort);
+- Backup Health (età ultimo archivio 7/14 giorni, guest senza backup senza
+  falsi CRITICAL) e Cluster/HA (quorum, servizi HA, rilevamento standalone);
+- alert model V2 con dettaglio "Perché lo vedo?" (valore, soglia, fonte,
+  suggerimento non distruttivo);
+- anti-flap V2: isteresi quantitativa invariata, clear ritardato per gli
+  stati (offline 2 refresh, ZFS 1 lettura, HA 2 letture);
+- soglie configurabili minime (storage %, età backup giorni, swap %) con
+  ripristino default, salvate in `config.json → health.settings`;
+- UI Monitoraggio V2: filtri severità/server solo client-side, sezioni
+  collassabili, sezioni Storage/ZFS/Backup/Cluster;
+- PWA: cache `nodepilot-v5` (`app.js?v=25`, `style.css?v=16`, `i18n.js?v=18`).
+
 ## v1.1.1 — Open Source Preparation
 
 Status: **Stable** — nessuna modifica funzionale

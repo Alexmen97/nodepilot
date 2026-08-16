@@ -146,6 +146,12 @@ function stopFrontendWork() {
   healthTaskCache.fetchedAt = 0;
   healthTaskCache.fetching = false;
   healthTaskCache.error = false;
+  for (const k of Object.keys(healthSourceCache)) {
+    healthSourceCache[k] = { at: 0, data: null, errors: [], fetching: false };
+  }
+  healthFilters.severity = 'all';
+  healthFilters.server = 'all';
+  healthSectionsInit = false;
   activeTask = null;
   logsData = [];
   backupShowAll = false;
@@ -2213,7 +2219,9 @@ async function refresh() {
     state.health = evaluateHealth(
       state.status,
       (state.config && state.config.health && state.config.health.guestModes) || {},
-      healthTaskCache.data || []
+      healthTaskCache.data || [],
+      healthExtrasPayload(),
+      healthSettings()
     );
     renderAll();
   } catch (e) {
@@ -2280,6 +2288,7 @@ async function loadConfig() {
     const res = await fetch('/api/config');
     state.config = await res.json();
     $('refreshSelect').value = String(state.config.refreshMs || 10000);
+    updateHealthSettingsUI();
     applyTheme();
     applyLanguage();
   } catch { /* ignora */ }
@@ -2958,6 +2967,42 @@ const HEALTH_TASK_ALLOWLIST = {
 };
 const HEALTH_TASK_WINDOW_S = 24 * 3600;
 const HEALTH_TASK_TTL_MS = 60000;
+
+/* ---------- Health V2.0 Core: soglie configurabili e costanti ---------- */
+
+const HEALTH_SETTING_DEFAULTS = {
+  storage: { warning: 85, critical: 90 },
+  backupAge: { warningDays: 7, criticalDays: 14 },
+  swap: { warning: 80, critical: 90 },
+};
+
+/* impostazioni effettive: config.json (health.settings) + default; un gruppo
+   invalido ricade sui default. Pura, nessun side effect. */
+function healthSettings() {
+  const s = state.config && state.config.health && state.config.health.settings;
+  const out = {};
+  for (const [group, def] of Object.entries(HEALTH_SETTING_DEFAULTS)) {
+    const user = s && typeof s === 'object' && !Array.isArray(s) ? s[group] : null;
+    const g = {};
+    for (const key of Object.keys(def)) {
+      const raw = user && typeof user === 'object' ? user[key] : null;
+      g[key] = Number.isFinite(Number(raw)) ? Number(raw) : def[key];
+    }
+    out[group] = g;
+  }
+  const pctOk = (g) => g.warning >= 1 && g.warning <= 99 && g.critical >= 2 && g.critical <= 100 && g.warning < g.critical;
+  if (!pctOk(out.storage)) out.storage = { ...def.storage };
+  if (!pctOk(out.swap)) out.swap = { ...def.swap };
+  const b = out.backupAge;
+  if (!(b.warningDays >= 1 && b.warningDays <= 365 && b.criticalDays >= 2 && b.criticalDays <= 365 && b.warningDays < b.criticalDays)) {
+    out.backupAge = { ...def.backupAge };
+  }
+  return out;
+}
+
+const HEALTH_ZFS_BAD = ['DEGRADED', 'FAULTED', 'UNAVAIL'];
+const HEALTH_ZFS_ERRORS_OK = 'No known data errors';
+const HEALTH_LOAD_WARN_MULT = 1.5;
 
 /* ---------- Backup & Snapshot Manager (FASE 3: vista globale READ) ---------- */
 
@@ -3911,7 +3956,47 @@ function healthHysteresis(id, value, thresholds) {
   return entry;
 }
 
-function healthAlert(id, severity, category, titleKey, descriptionKey, params, serverId, serverName, node, guestType, guestId, guestName, ts) {
+/* stati/eventi V2: alert immediato quando isBad, clear solo dopo N osservazioni
+   sane consecutive (evita flap su timeout singoli o transitori). */
+function healthState(id, severity, isBad, clearAfter) {
+  const entry = healthSamples.get(id) || { ok: 0, severity: null, firstSeen: null };
+  if (isBad) {
+    entry.ok = 0;
+    healthApplyState(id, entry, severity);
+    return entry;
+  }
+  entry.ok += 1;
+  if (entry.severity !== null && entry.ok >= (clearAfter || 1)) {
+    healthApplyState(id, entry, null);
+    return entry;
+  }
+  healthSamples.set(id, entry);
+  return entry;
+}
+
+/* load average: INFO se load1 >= cpus, WARNING se >= 1.5*cpus (2 campioni,
+   downgrade a scalino; MAI CRITICAL in V2.0). */
+function healthLoadHysteresis(id, load1, cpus) {
+  const entry = healthSamples.get(id) || { warn: 0, info: 0, ok: 0, severity: null, firstSeen: null };
+  const warnAt = cpus * HEALTH_LOAD_WARN_MULT;
+  if (load1 >= warnAt) { entry.warn += 1; entry.info = 0; entry.ok = 0; }
+  else if (load1 >= cpus) { entry.info += 1; entry.warn = 0; entry.ok = 0; }
+  else { entry.ok += 1; entry.warn = 0; entry.info = 0; }
+  let desired = null;
+  if (entry.warn >= 2) desired = 'warning';
+  else if (entry.info >= 2) desired = 'info';
+  else if (entry.ok >= 2) desired = null;
+  else desired = entry.severity;
+  if (desired === null && entry.severity === null) {
+    healthSamples.set(id, entry);
+    return entry;
+  }
+  healthApplyState(id, entry, desired);
+  return entry;
+}
+
+function healthAlert(id, severity, category, titleKey, descriptionKey, params, serverId, serverName, node, guestType, guestId, guestName, ts, extra) {
+  const x = extra && typeof extra === 'object' ? extra : {};
   return {
     id,
     severity,
@@ -3926,19 +4011,35 @@ function healthAlert(id, severity, category, titleKey, descriptionKey, params, s
     guestId: guestId || null,
     guestName: guestName || null,
     ts,
-    source: 'status',
+    source: x.source || 'status',
+    storage: x.storage || null,
+    pool: x.pool || null,
+    detail: x.detail || null,
     action: null /* azioni in FASE 4 */
   };
 }
 
-/* motore Health: riceve status + guestModes (taskAlerts riservato FASE 4).
+/* motore Health V2: riceve status + guestModes + taskAlerts + fonti on-demand
+   (extras) + soglie configurabili (settings).
    NON fa fetch, NON tocca il DOM, NON crea timer, NON modifica config/Proxmox. */
-function evaluateHealth(status, guestModes, taskAlerts) {
+function evaluateHealth(status, guestModes, taskAlerts, extras, settings) {
   const alerts = [];
   const seen = new Set();
   const servers = [];
   const summary = { state: 'healthy', critical: 0, warning: 0, info: 0, serversTotal: 0, serversOnline: 0, guestsTotal: 0, guestsRunning: 0 };
   const modes = guestModes && typeof guestModes === 'object' ? guestModes : {};
+  const ex = extras && typeof extras === 'object' ? extras : {};
+  const set = settings && typeof settings === 'object' ? settings : healthSettings();
+
+  /* dettaglio "Perché lo vedo?": valore/soglia/fonte/suggerimento (chiavi i18n) */
+  const detailFor = (current, threshold, unit, sourceKey, suggestionKey) => ({
+    current: current === null || current === undefined ? '' : String(current),
+    threshold: threshold === null || threshold === undefined ? '' : String(threshold),
+    unit: unit || '',
+    sourceLabel: sourceKey || null,
+    suggestionKey: suggestionKey || null,
+  });
+  const pct = (v) => Math.round(v * 100);
 
   const push = (a) => {
     alerts.push(a);
@@ -3960,11 +4061,18 @@ function evaluateHealth(status, guestModes, taskAlerts) {
     servers.push(serverEntry);
 
     if (!online) {
-      /* server offline: UN CRITICAL, poi skip nodi/guest (dati stale o assenti);
-         gli id dei check non visti vengono ripuliti a fine giro. */
-      const entry = healthImmediate('server:' + serverId + ':offline', 'critical');
+      /* server offline: UN CRITICAL immediato, clear dopo 2 refresh online
+         consecutivi (V2 anti-flap); poi skip nodi/guest (dati stale o assenti). */
+      const entry = healthState('server:' + serverId + ':offline', 'critical', true, 2);
       push(healthAlert('server:' + serverId + ':offline', 'critical', 'server', 'health.serverOffline', 'health.serverOffline.desc', { name: serverName }, serverId, serverName, null, null, null, null, entry.firstSeen));
       continue;
+    }
+    /* osservazione sana del server: accumula il contatore per il clear; finché
+       la finestra non è chiusa l'alert resta visibile (anti-flap V2). */
+    const offEntry = healthState('server:' + serverId + ':offline', null, false, 2);
+    seen.add('server:' + serverId + ':offline');
+    if (offEntry.severity) {
+      push(healthAlert('server:' + serverId + ':offline', 'critical', 'server', 'health.serverOffline', 'health.serverOffline.desc', { name: serverName }, serverId, serverName, null, null, null, null, offEntry.firstSeen));
     }
 
     const nodes = Array.isArray(s.nodes) ? s.nodes : [];
@@ -3977,13 +4085,19 @@ function evaluateHealth(status, guestModes, taskAlerts) {
         cpu: typeof n.cpu === 'number' && Number.isFinite(n.cpu) ? n.cpu : null,
         ram: healthRatio(n.mem, n.maxmem),
         rootfs: healthRatio(n.rootfs && n.rootfs.used, n.rootfs && n.rootfs.total),
+        swap: n.swap && typeof n.swap.total === 'number' && n.swap.total > 0 && typeof n.swap.used === 'number'
+          ? Math.max(0, Math.min(1, n.swap.used / n.swap.total))
+          : null,
+        loadavg: Array.isArray(n.loadavg) ? n.loadavg : null,
+        cpus: n.cpuinfo && Number.isFinite(Number(n.cpuinfo.cpus)) ? Number(n.cpuinfo.cpus) : null,
         guestsTotal: 0,
         guestsRunning: 0
       };
       serverEntry.nodes.push(nodeEntry);
 
       if (nodeStatus === 'offline') {
-        const entry = healthImmediate('node:' + serverId + ':' + nodeName + ':offline', 'critical');
+        /* offline immediato, clear dopo 2 osservazioni online consecutive */
+        const entry = healthState('node:' + serverId + ':' + nodeName + ':offline', 'critical', true, 2);
         push(healthAlert('node:' + serverId + ':' + nodeName + ':offline', 'critical', 'node', 'health.nodeOffline', 'health.nodeOffline.desc', { node: nodeName }, serverId, serverName, nodeName, null, null, null, entry.firstSeen));
         continue;
       }
@@ -3991,6 +4105,13 @@ function evaluateHealth(status, guestModes, taskAlerts) {
         const entry = healthImmediate('node:' + serverId + ':' + nodeName + ':unknown', 'warning');
         push(healthAlert('node:' + serverId + ':' + nodeName + ':unknown', 'warning', 'node', 'health.nodeUnknown', 'health.nodeUnknown.desc', { node: nodeName }, serverId, serverName, nodeName, null, null, null, entry.firstSeen));
         continue;
+      }
+      /* nodo online: accumula il contatore per il clear; l'alert resta visibile
+         finché la finestra di 2 osservazioni sane non si chiude. */
+      const nodeOffEntry = healthState('node:' + serverId + ':' + nodeName + ':offline', null, false, 2);
+      seen.add('node:' + serverId + ':' + nodeName + ':offline');
+      if (nodeOffEntry.severity) {
+        push(healthAlert('node:' + serverId + ':' + nodeName + ':offline', 'critical', 'node', 'health.nodeOffline', 'health.nodeOffline.desc', { node: nodeName }, serverId, serverName, nodeName, null, null, null, nodeOffEntry.firstSeen));
       }
 
       /* --- risorse nodo (solo online) --- */
@@ -4014,6 +4135,31 @@ function evaluateHealth(status, guestModes, taskAlerts) {
         const entry = healthImmediate('node:' + serverId + ':' + nodeName + ':rootfs-high', healthThresholdSeverity(nodeEntry.rootfs, HEALTH_THRESHOLDS.node.rootfs));
         if (entry.severity) {
           push(healthAlert('node:' + serverId + ':' + nodeName + ':rootfs-high', entry.severity, 'node', 'health.rootfsHigh', 'health.rootfsHigh.desc', { node: nodeName, pct: Math.round(nodeEntry.rootfs * 100) }, serverId, serverName, nodeName, null, null, null, entry.firstSeen));
+        }
+      }
+      /* --- swap nodo (solo se presente e total > 0): soglie configurabili --- */
+      if (nodeEntry.swap !== null) {
+        const checkId = 'node:' + serverId + ':' + nodeName + ':swap-high';
+        const th = { warning: set.swap.warning / 100, critical: set.swap.critical / 100 };
+        const entry = healthHysteresis(checkId, nodeEntry.swap, th);
+        seen.add(checkId);
+        if (entry.severity) {
+          const thr = th[entry.severity === 'critical' ? 'critical' : 'warning'];
+          push(healthAlert(checkId, entry.severity, 'node', 'health.swapHigh', 'health.swapHigh.desc',
+            { node: nodeName, pct: pct(nodeEntry.swap) }, serverId, serverName, nodeName, null, null, null, entry.firstSeen,
+            { detail: detailFor(pct(nodeEntry.swap) + '%', pct(thr) + '%', '%', 'health.source.nodeStatus', 'health.hint.swapHigh') }));
+        }
+      }
+      /* --- load average: INFO >= cpus, WARNING >= 1.5*cpus, mai CRITICAL --- */
+      if (nodeEntry.loadavg && nodeEntry.cpus && nodeEntry.cpus > 0) {
+        const checkId = 'node:' + serverId + ':' + nodeName + ':load-high';
+        const load1 = nodeEntry.loadavg[0];
+        const entry = healthLoadHysteresis(checkId, load1, nodeEntry.cpus);
+        seen.add(checkId);
+        if (entry.severity === 'warning' || entry.severity === 'info') {
+          push(healthAlert(checkId, entry.severity, 'node', 'health.loadHigh', 'health.loadHigh.desc',
+            { node: nodeName, load1: Number(load1.toFixed(2)), cpus: nodeEntry.cpus }, serverId, serverName, nodeName, null, null, null, entry.firstSeen,
+            { detail: detailFor(Number(load1.toFixed(2)), nodeEntry.cpus, '', 'health.source.nodeStatus', 'health.hint.loadHigh') }));
         }
       }
       if (typeof n.uptime === 'number' && n.uptime > 0 && n.uptime < HEALTH_RECENT_REBOOT_S) {
@@ -4059,10 +4205,11 @@ function evaluateHealth(status, guestModes, taskAlerts) {
           if (typeof g.maxmem === 'number' && g.maxmem > 0) {
             const checkId = 'guest:' + key + ':ram-high';
             let ramRatio = null;
-            if (guestType === 'qemu' && typeof g.free_mem === 'number' && g.free_mem >= 0) {
-              /* PRIORITÀ 1: guest agent disponibile -> uso reale = maxmem - free_mem.
-                 free_mem = 0 è un valore VALIDO (uso 100%); clamp inferiore anti-negativo. */
-              ramRatio = Math.max(0, g.maxmem - g.free_mem) / g.maxmem;
+            if (guestType === 'qemu' && typeof g.freemem === 'number' && g.freemem >= 0) {
+              /* PRIORITÀ 1: guest agent disponibile -> uso reale = maxmem - freemem.
+                 PVE 9.2 espone freemem (in passato free_mem): il collector normalizza.
+                 freemem = 0 è un valore VALIDO (uso 100%); clamp anti-negativo. */
+              ramRatio = Math.max(0, g.maxmem - g.freemem) / g.maxmem;
               if (!Number.isFinite(ramRatio)) ramRatio = null;
             } else if (guestType === 'qemu' && typeof g.mem === 'number' && g.mem > g.maxmem) {
               /* PRIORITÀ 2: QEMU senza metrica guest affidabile e mem > maxmem
@@ -4091,6 +4238,271 @@ function evaluateHealth(status, guestModes, taskAlerts) {
               push(healthAlert('guest:' + key + ':disk-high', entry.severity, 'guest', 'health.diskHigh', 'health.diskHigh.desc', { guestName, pct: Math.round((g.disk / g.maxdisk) * 100) }, serverId, serverName, nodeName, guestType, guestId, guestName, entry.firstSeen));
             }
           }
+          /* --- lock: guest occupato da un task Proxmox (INFO, transitorio) --- */
+          {
+            const checkId = 'guest:' + key + ':locked';
+            const entry = healthState(checkId, 'info', !!g.lock, 1);
+            seen.add(checkId);
+            if (entry.severity) {
+              push(healthAlert(checkId, 'info', 'guest', 'health.guestLocked', 'health.guestLocked.desc',
+                { guestName, lock: g.lock }, serverId, serverName, nodeName, guestType, guestId, guestName, entry.firstSeen,
+                { detail: detailFor(g.lock, '-', '', 'health.source.nodeStatus', 'health.hint.guestLocked') }));
+            }
+          }
+          /* --- QMP: QEMU in esecuzione ma stato interno non running (INFO,
+                 mai "crashed": l'API non permette di distinguerlo in modo affidabile) --- */
+          if (guestType === 'qemu' && typeof g.qmpstatus === 'string' && g.qmpstatus !== '' && g.qmpstatus !== 'running') {
+            const checkId = 'guest:' + key + ':qmp';
+            const entry = healthState(checkId, 'info', true, 1);
+            seen.add(checkId);
+            if (entry.severity) {
+              push(healthAlert(checkId, 'info', 'guest', 'health.guestQmp', 'health.guestQmp.desc',
+                { guestName, qmpstatus: g.qmpstatus }, serverId, serverName, nodeName, guestType, guestId, guestName, entry.firstSeen,
+                { detail: detailFor(g.qmpstatus, 'running', '', 'health.source.nodeStatus', 'health.hint.guestQmp') }));
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /* ---------- Health V2.0 Core: storage / ZFS / cluster-HA / backup ---------- */
+
+  /* --- storage (fonte on-demand /api/health/storage) --- */
+  for (const st of (ex.storages || [])) {
+    const sid = st.serverId || '';
+    const snode = st.node || '';
+    const sname = st.storage || '';
+    const base = 'storage:' + sid + ':' + snode + ':' + sname;
+    const th = { warning: set.storage.warning / 100, critical: set.storage.critical / 100 };
+    if (st.active === false) {
+      const entry = healthState(base + ':offline', 'warning', true, 1);
+      seen.add(base + ':offline');
+      push(healthAlert(base + ':offline', 'warning', 'storage', 'health.storageOffline', 'health.storageOffline.desc',
+        { storage: sname }, sid, st.serverName || sid, snode, null, null, null, entry.firstSeen,
+        { storage: sname, source: 'storage', detail: detailFor('-', '-', '', 'health.source.storageStatus', 'health.hint.storageOffline') }));
+    } else {
+      healthState(base + ':offline', null, false, 1);
+      seen.add(base + ':offline');
+    }
+    if (st.enabled === false) {
+      const entry = healthState(base + ':disabled', 'info', true, 1);
+      seen.add(base + ':disabled');
+      push(healthAlert(base + ':disabled', 'info', 'storage', 'health.storageDisabled', 'health.storageDisabled.desc',
+        { storage: sname }, sid, st.serverName || sid, snode, null, null, null, entry.firstSeen,
+        { storage: sname, source: 'storage', detail: detailFor('-', '-', '', 'health.source.storageStatus', 'health.hint.storageDisabled') }));
+    } else {
+      healthState(base + ':disabled', null, false, 1);
+      seen.add(base + ':disabled');
+    }
+    const ratio = typeof st.usedFraction === 'number' && Number.isFinite(st.usedFraction) ? st.usedFraction
+      : (st.total > 0 && typeof st.used === 'number') ? st.used / st.total : null;
+    const highId = base + ':high';
+    seen.add(highId);
+    if (ratio !== null) {
+      const entry = healthHysteresis(highId, Math.max(0, Math.min(1, ratio)), th);
+      if (entry.severity) {
+        const thr = th[entry.severity === 'critical' ? 'critical' : 'warning'];
+        push(healthAlert(highId, entry.severity, 'storage', 'health.storageHigh', 'health.storageHigh.desc',
+          { storage: sname, pct: pct(ratio) }, sid, st.serverName || sid, snode, null, null, null, entry.firstSeen,
+          { storage: sname, source: 'storage', detail: detailFor(pct(ratio) + '%', pct(thr) + '%', '%', 'health.source.storageStatus', 'health.hint.storageHigh') }));
+      }
+    } else {
+      healthSamples.delete(highId); /* totali non disponibili: metrica non valutabile */
+    }
+  }
+
+  /* --- ZFS (fonte on-demand /api/health/zfs) --- */
+  for (const pool of (ex.pools || [])) {
+    const sid = pool.serverId || '';
+    const snode = pool.node || '';
+    const pname = pool.name || '';
+    const base = 'zfs:' + sid + ':' + snode + ':' + pname;
+    const stateStr = pool.detail && typeof pool.detail.state === 'string' && pool.detail.state !== '' ? pool.detail.state : (pool.health || '');
+    const badState = HEALTH_ZFS_BAD.includes(String(stateStr).toUpperCase());
+    if (badState) {
+      const entry = healthState(base + ':degraded', 'critical', true, 1);
+      seen.add(base + ':degraded');
+      push(healthAlert(base + ':degraded', 'critical', 'zfs', 'health.zfsDegraded', 'health.zfsDegraded.desc',
+        { pool: pname, state: stateStr }, sid, pool.serverName || sid, snode, null, null, null, entry.firstSeen,
+        { pool: pname, source: 'zfs', detail: detailFor(stateStr, 'ONLINE', '', 'health.source.zfsStatus', 'health.hint.zfsDegraded') }));
+    } else {
+      healthState(base + ':degraded', null, false, 1);
+      seen.add(base + ':degraded');
+    }
+    const errs = pool.detail ? pool.detail.errors : null;
+    const hasErrors = typeof errs === 'string' && errs.trim() !== '' && errs.trim() !== HEALTH_ZFS_ERRORS_OK;
+    if (hasErrors) {
+      const entry = healthState(base + ':errors', 'critical', true, 1);
+      seen.add(base + ':errors');
+      push(healthAlert(base + ':errors', 'critical', 'zfs', 'health.zfsErrors', 'health.zfsErrors.desc',
+        { pool: pname, errors: errs }, sid, pool.serverName || sid, snode, null, null, null, entry.firstSeen,
+        { pool: pname, source: 'zfs', detail: detailFor(errs, HEALTH_ZFS_ERRORS_OK, '', 'health.source.zfsStatus', 'health.hint.zfsErrors') }));
+    } else {
+      healthState(base + ':errors', null, false, 1);
+      seen.add(base + ':errors');
+    }
+    const capRatio = typeof pool.free === 'number' && typeof pool.size === 'number' && pool.size > 0
+      ? Math.max(0, Math.min(1, 1 - pool.free / pool.size)) : null;
+    const capId = base + ':capacity';
+    seen.add(capId);
+    if (capRatio !== null) {
+      const th = { warning: set.storage.warning / 100, critical: set.storage.critical / 100 };
+      const entry = healthHysteresis(capId, capRatio, th);
+      if (entry.severity) {
+        const thr = th[entry.severity === 'critical' ? 'critical' : 'warning'];
+        push(healthAlert(capId, entry.severity, 'zfs', 'health.zfsCapacity', 'health.zfsCapacity.desc',
+          { pool: pname, pct: pct(capRatio) }, sid, pool.serverName || sid, snode, null, null, null, entry.firstSeen,
+          { pool: pname, source: 'zfs', detail: detailFor(pct(capRatio) + '%', pct(thr) + '%', '%', 'health.source.zfsStatus', 'health.hint.zfsCapacity') }));
+      }
+    } else {
+      healthSamples.delete(capId);
+    }
+    /* scrub: parsing best effort della stringa scan; stringa non interpretabile
+       -> nessun alert inventato. INFO/WARNING riemesso solo quando cambia lo scan. */
+    if (pool.detail && typeof pool.detail.scan === 'string' && pool.detail.scan.trim() !== '') {
+      const scan = pool.detail.scan;
+      const mErr = /with (\d+) errors/i.exec(scan);
+      const inProgress = /in progress/i.test(scan);
+      let severity = null;
+      if (!inProgress && mErr) severity = Number(mErr[1]) > 0 ? 'warning' : 'info';
+      const scrubId = base + ':scrub';
+      const entry = healthSamples.get(scrubId) || { severity: null, firstSeen: null, scan: null };
+      if (entry.scan !== scan) {
+        entry.scan = scan;
+        entry.firstSeen = null;
+        entry.severity = null;
+      }
+      healthApplyState(scrubId, entry, severity);
+      seen.add(scrubId);
+      if (entry.severity === 'warning') {
+        push(healthAlert(scrubId, 'warning', 'zfs', 'health.zfsScrubErrors', 'health.zfsScrubErrors.desc',
+          { pool: pname }, sid, pool.serverName || sid, snode, null, null, null, entry.firstSeen,
+          { pool: pname, source: 'zfs', detail: detailFor(scan, '-', '', 'health.source.zfsStatus', 'health.hint.zfsScrubErrors') }));
+      } else if (entry.severity === 'info') {
+        push(healthAlert(scrubId, 'info', 'zfs', 'health.zfsScrubOk', 'health.zfsScrubOk.desc',
+          { pool: pname }, sid, pool.serverName || sid, snode, null, null, null, entry.firstSeen,
+          { pool: pname, source: 'zfs', detail: detailFor(scan, '-', '', 'health.source.zfsStatus', null) }));
+      }
+    }
+  }
+
+  /* --- cluster / HA (fonte on-demand /api/health/cluster) --- */
+  for (const c of (ex.clusters || [])) {
+    const sid = c.serverId || '';
+    const srv = c.serverName || sid;
+    if (c.cluster === true && c.quorate === 0) {
+      const id = 'cluster:' + sid + ':quorum';
+      const entry = healthState(id, 'critical', true, 2);
+      seen.add(id);
+      push(healthAlert(id, 'critical', 'cluster', 'health.quorumLost', 'health.quorumLost.desc',
+        {}, sid, srv, null, null, null, null, entry.firstSeen,
+        { source: 'cluster', detail: detailFor('-', '-', '', 'health.source.clusterStatus', 'health.hint.quorumLost') }));
+    } else if (c.cluster === true) {
+      const id = 'cluster:' + sid + ':quorum';
+      const qEntry = healthState(id, null, false, 2);
+      seen.add(id);
+      if (qEntry.severity) {
+        push(healthAlert(id, 'critical', 'cluster', 'health.quorumLost', 'health.quorumLost.desc',
+          {}, sid, srv, null, null, null, null, qEntry.firstSeen,
+          { source: 'cluster', detail: detailFor('-', '-', '', 'health.source.clusterStatus', 'health.hint.quorumLost') }));
+      }
+    }
+    const services = (c.ha && Array.isArray(c.ha.services) && c.ha.services.length) ? c.ha.services : (c.haResources || []);
+    for (const sv of services) {
+      const sidKey = sv.sid || (sv.type ? sv.type + ':' + (sv.node || '?') : '?');
+      const state = sv.state || '';
+      if (state === 'error') {
+        const id = 'ha:' + sid + ':' + sidKey + ':error';
+        const entry = healthState(id, 'critical', true, 2);
+        seen.add(id);
+        push(healthAlert(id, 'critical', 'ha', 'health.haError', 'health.haError.desc',
+          { sid: sidKey }, sid, srv, sv.node || null, null, null, null, entry.firstSeen,
+          { source: 'ha', detail: detailFor(state, 'started', '', 'health.source.haStatus', 'health.hint.haError') }));
+      } else if (state === 'stopped') {
+        const id = 'ha:' + sid + ':' + sidKey + ':stopped';
+        const entry = healthState(id, 'warning', true, 2);
+        seen.add(id);
+        push(healthAlert(id, 'warning', 'ha', 'health.haStopped', 'health.haStopped.desc',
+          { sid: sidKey }, sid, srv, sv.node || null, null, null, null, entry.firstSeen,
+          { source: 'ha', detail: detailFor(state, 'started', '', 'health.source.haStatus', 'health.hint.haStopped') }));
+      } else {
+        const idE = 'ha:' + sid + ':' + sidKey + ':error';
+        const idS = 'ha:' + sid + ':' + sidKey + ':stopped';
+        const eE = healthState(idE, null, false, 2); seen.add(idE);
+        const eS = healthState(idS, null, false, 2); seen.add(idS);
+        /* finestra di clear: l'alert resta visibile finché non si chiude */
+        if (eE.severity) {
+          push(healthAlert(idE, 'critical', 'ha', 'health.haError', 'health.haError.desc',
+            { sid: sidKey }, sid, srv, sv.node || null, null, null, null, eE.firstSeen,
+            { source: 'ha', detail: detailFor('error', 'started', '', 'health.source.haStatus', 'health.hint.haError') }));
+        }
+        if (eS.severity) {
+          push(healthAlert(idS, 'warning', 'ha', 'health.haStopped', 'health.haStopped.desc',
+            { sid: sidKey }, sid, srv, sv.node || null, null, null, null, eS.firstSeen,
+            { source: 'ha', detail: detailFor('stopped', 'started', '', 'health.source.haStatus', 'health.hint.haStopped') }));
+        }
+      }
+    }
+  }
+
+  /* --- backup: età dell'ultimo archivio per guest (fonte storage content) --- */
+  const bSet = set.backupAge;
+  const nowS = Math.floor(Date.now() / 1000);
+  const backupsByGuest = new Map();
+  const jobsByServer = new Map();
+  for (const bs of (ex.backups || [])) {
+    for (const b of (bs.backups || [])) {
+      if (!b || b.vmid == null) continue;
+      const k = (bs.serverId || '') + ':' + (b.guestType || '?') + ':' + b.vmid;
+      const prev = backupsByGuest.get(k);
+      if (!prev || (b.ctime || 0) > (prev.ctime || 0)) backupsByGuest.set(k, b);
+    }
+    for (const j of (bs.jobs || [])) {
+      if (!j || !j.enabled) continue;
+      const arr = jobsByServer.get(bs.serverId) || [];
+      arr.push(j);
+      jobsByServer.set(bs.serverId, arr);
+    }
+  }
+  const jobCovers = (serverId, vmid) => (jobsByServer.get(serverId) || []).some((j) => {
+    if (j.all) return true;
+    const raw = j.vmid == null ? '' : String(j.vmid);
+    if (!raw.trim()) return false;
+    return raw.split(',').map((x) => Number(String(x).trim()))
+      .filter((x) => Number.isFinite(x) && x > 0).includes(Number(vmid));
+  });
+  for (const s of list) {
+    if (!s.online) continue;
+    const sid = s.id || '';
+    const sname = s.name || sid;
+    for (const nd of (s.nodes || [])) {
+      for (const g of [].concat(Array.isArray(nd.vms) ? nd.vms : [], Array.isArray(nd.lxc) ? nd.lxc : [])) {
+        const gkey = sid + ':' + (g.type === 'qemu' ? 'qemu' : 'lxc') + ':' + g.id;
+        const last = backupsByGuest.get(gkey);
+        if (last && last.ctime) {
+          const days = (nowS - last.ctime) / 86400;
+          let severity = null;
+          if (days >= bSet.criticalDays) severity = 'critical';
+          else if (days >= bSet.warningDays) severity = 'warning';
+          const id = 'backup:' + gkey + ':age';
+          seen.add(id);
+          if (severity) {
+            const entry = healthImmediate(id, severity);
+            const thr = severity === 'critical' ? bSet.criticalDays : bSet.warningDays;
+            push(healthAlert(id, severity, 'backup', 'health.backupAge', 'health.backupAge.desc',
+              { guestName: g.name, days: Math.floor(days) }, sid, sname, nd.name, g.type === 'qemu' ? 'qemu' : 'lxc', g.id, g.name, entry.firstSeen,
+              { source: 'backup', detail: detailFor(Math.floor(days) + ' d', thr + ' d', '', 'health.source.backupContent', 'health.hint.backupAge') }));
+          }
+        } else {
+          const id = 'backup:' + gkey + ':never';
+          seen.add(id);
+          const covered = jobCovers(sid, g.id);
+          const entry = healthImmediate(id, 'info');
+          push(healthAlert(id, 'info', 'backup', covered ? 'health.backupPending' : 'health.backupNone',
+            covered ? 'health.backupPending.desc' : 'health.backupNone.desc',
+            { guestName: g.name }, sid, sname, nd.name, g.type === 'qemu' ? 'qemu' : 'lxc', g.id, g.name, entry.firstSeen,
+            { source: 'backup', detail: detailFor('-', '-', '', 'health.source.backupContent', covered ? 'health.hint.backupPending' : 'health.hint.backupNone') }));
         }
       }
     }
@@ -4199,11 +4611,16 @@ function healthAlertHtml(a) {
   const ctx = [];
   if (a.serverName) ctx.push(esc(a.serverName));
   if (a.node) ctx.push(esc(a.node));
+  if (a.storage) ctx.push(esc(a.storage));
+  if (a.pool) ctx.push(esc(a.pool));
   if (a.guestName) ctx.push(esc(a.guestName) + (a.guestId != null ? ' · ' + (a.guestType === 'qemu' ? t('vms') : t('lxc')) + ' ' + a.guestId : ''));
   let action = '';
   if (a.category === 'guest' && a.guestId != null) {
     action = '<button type="button" class="ghost-btn health-alert-action" data-health-open-guest="' +
       esc(a.serverId) + ':' + esc(a.node) + ':' + esc(a.guestType) + ':' + esc(a.guestId) + '">' + t('health.action.openGuest') + '</button>';
+  } else if (a.category === 'backup' && a.guestId != null) {
+    action = '<button type="button" class="ghost-btn health-alert-action" data-health-open-backup ' +
+      'data-backup-server="' + esc(a.serverId) + '" data-backup-vmid="' + esc(a.guestId) + '" data-backup-type="' + esc(a.guestType || '') + '">' + t('backup.open') + '</button>';
   } else if (a.category === 'task') {
     action = '<button type="button" class="ghost-btn health-alert-action" data-health-open-task ' +
       'data-task-server="' + esc(a.serverId) + '" data-task-node="' + esc(a.node || '') + '" data-task-upid="' + esc((a.params && a.params.upid) || '') + '">' + t('health.action.openLog') + '</button>';
@@ -4214,7 +4631,30 @@ function healthAlertHtml(a) {
         'data-backup-server="' + esc(a.serverId) + '" data-backup-vmid="' + (a.guestId != null ? esc(a.guestId) : '') + '" data-backup-type="' + esc(a.guestType || '') + '">' + t('backup.open') + '</button>';
     }
   }
-  return '<div class="health-alert health-alert--' + a.severity + '" role="listitem">' +
+  /* dettaglio "Perché lo vedo?": valore corrente, soglia, fonte, suggerimento
+     non distruttivo. Solo se l'alert espone un dettaglio. */
+  let why = '';
+  if (a.detail) {
+    const rows = [];
+    const d = a.detail;
+    if (d.current !== undefined && d.current !== null && String(d.current) !== '') {
+      rows.push('<div class="health-why-row"><span class="health-why-label">' + t('health.detail.current') + '</span><span>' + esc(String(d.current) + (d.unit || '')) + '</span></div>');
+    }
+    if (d.threshold !== undefined && d.threshold !== null && String(d.threshold) !== '') {
+      rows.push('<div class="health-why-row"><span class="health-why-label">' + t('health.detail.threshold') + '</span><span>' + esc(String(d.threshold) + (d.unit || '')) + '</span></div>');
+    }
+    if (d.sourceLabel) {
+      rows.push('<div class="health-why-row"><span class="health-why-label">' + t('health.detail.source') + '</span><span>' + esc(t(d.sourceLabel)) + '</span></div>');
+    }
+    if (d.suggestionKey) {
+      rows.push('<div class="health-why-row"><span class="health-why-label">' + t('health.detail.suggestion') + '</span><span>' + esc(t(d.suggestionKey)) + '</span></div>');
+    }
+    if (rows.length) {
+      why = '<details class="health-alert-why"><summary>' + t('health.why') + '</summary>' +
+        '<div class="health-why-grid">' + rows.join('') + '</div></details>';
+    }
+  }
+  return '<div class="health-alert health-alert--' + a.severity + '" role="listitem" data-alert-id="' + esc(a.id) + '">' +
     '<div class="health-alert-icon">' + HEALTH_SEV_ICON[a.severity] + '</div>' +
     '<div class="health-alert-body">' +
       '<div class="health-alert-top">' +
@@ -4224,6 +4664,7 @@ function healthAlertHtml(a) {
       '<div class="health-alert-title">' + esc(txt.title) + '</div>' +
       '<div class="health-alert-desc">' + esc(txt.desc) + '</div>' +
       (ctx.length ? '<div class="health-alert-ctx">' + ctx.join(' · ') + '</div>' : '') +
+      why +
     '</div>' +
     (action ? '<div class="health-alert-actions">' + action + '</div>' : '') +
   '</div>';
@@ -4241,6 +4682,9 @@ function healthInfraHtml(servers) {
             healthBarRow(t('cpu'), n.cpu) +
             healthBarRow(t('ram'), n.ram) +
             healthBarRow(t('health.infra.rootfs'), n.rootfs) +
+            healthBarRow(t('health.infra.swap'), n.swap) +
+            '<div class="health-bar-row"><span class="health-bar-label">' + t('health.infra.load') + '</span>' +
+              '<span class="health-load-value">' + (n.loadavg ? Number(n.loadavg[0]).toFixed(2) + ' / ' + (n.cpus || '—') : '—') + '</span></div>' +
             '<div class="health-bar-row"><span class="health-bar-label">' + t('health.infra.guest') + '</span>' +
               '<span class="health-bar-value">' + n.guestsRunning + ' / ' + n.guestsTotal + '</span></div>' +
           '</div>'
@@ -4256,8 +4700,174 @@ function healthInfraHtml(servers) {
   }).join('');
 }
 
+/* ---------- Health UI V2: filtri, sezioni e dettaglio ---------- */
+
+const healthFilters = { severity: 'all', server: 'all' };
+let healthSectionsInit = false;
+
+function healthFilterOk(a) {
+  if (healthFilters.severity !== 'all' && a.severity !== healthFilters.severity) return false;
+  if (healthFilters.server !== 'all' && a.serverId !== healthFilters.server) return false;
+  return true;
+}
+
+function healthServerOk(serverId) {
+  return healthFilters.server === 'all' || serverId === healthFilters.server;
+}
+
+function populateHealthServerFilter() {
+  const sel = $('healthServerFilter');
+  const servers = (state.status && state.status.servers) || [];
+  sel.innerHTML = '<option value="all">' + t('health.filter.serverAll') + '</option>' +
+    servers.map((s) => '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>').join('');
+  if (!servers.some((s) => s.id === healthFilters.server)) healthFilters.server = 'all';
+  sel.value = healthFilters.server;
+}
+
+function healthPartialNote(errors) {
+  if (!errors || !errors.length) return '';
+  return '<div class="health-partial-note">⚠ ' + t('health.partialErrors') + '</div>';
+}
+
+function healthStorageHtml(storages, errors) {
+  return storages.map((st) => {
+    const badges = [];
+    if (st.shared) badges.push('<span class="health-badge">' + t('health.shared') + '</span>');
+    if (st.enabled === false) badges.push('<span class="health-badge health-badge--info">' + t('health.storageDisabled.short') + '</span>');
+    return '<div class="health-row">' +
+      '<div class="health-row-head">' +
+        '<span class="health-row-name">' + esc(st.storage) + '</span>' +
+        badges.join('') +
+        '<span class="health-row-state ' + (st.active === false ? 'bad' : 'ok') + '">' + (st.active === false ? t('health.offline') : t('health.online')) + '</span>' +
+      '</div>' +
+      '<div class="health-row-meta">' + esc(st.type || '') + (st.nodes && st.nodes.length ? ' · ' + st.nodes.map(esc).join(', ') : '') + '</div>' +
+      healthBarRow(t('health.infra.usage'), st.ratio) +
+    '</div>';
+  }).join('') + healthPartialNote(errors);
+}
+
+function healthZfsHtml(pools, errors) {
+  return pools.map((p) => {
+    const state = p.detail && typeof p.detail.state === 'string' && p.detail.state !== '' ? p.detail.state : (p.health || '—');
+    const bad = HEALTH_ZFS_BAD.includes(String(state).toUpperCase());
+    const cap = typeof p.free === 'number' && typeof p.size === 'number' && p.size > 0 ? Math.max(0, Math.min(1, 1 - p.free / p.size)) : null;
+    const scan = p.detail && p.detail.scan ? p.detail.scan : '';
+    return '<div class="health-row">' +
+      '<div class="health-row-head">' +
+        '<span class="health-row-name">' + esc(p.name) + '</span>' +
+        '<span class="health-row-state ' + (bad ? 'bad' : 'ok') + '">' + esc(state) + '</span>' +
+      '</div>' +
+      '<div class="health-row-meta">' + esc(p.node || '') + (p.frag != null ? ' · frag ' + p.frag + '%' : '') + '</div>' +
+      healthBarRow(t('health.infra.usage'), cap) +
+      (scan ? '<div class="health-row-scan">' + esc(scan) + '</div>' : '') +
+    '</div>';
+  }).join('') + healthPartialNote(errors);
+}
+
+function healthBackupRows() {
+  const rows = [];
+  const nowS = Math.floor(Date.now() / 1000);
+  const byKey = new Map();
+  const jobsByServer = new Map();
+  for (const bs of healthSourceCache.backups.data || []) {
+    for (const b of (bs.backups || [])) {
+      if (!b || b.vmid == null) continue;
+      const k = (bs.serverId || '') + ':' + (b.guestType || '?') + ':' + b.vmid;
+      const prev = byKey.get(k);
+      if (!prev || (b.ctime || 0) > (prev.ctime || 0)) byKey.set(k, b);
+    }
+    for (const j of (bs.jobs || [])) {
+      if (!j || !j.enabled) continue;
+      const arr = jobsByServer.get(bs.serverId) || [];
+      arr.push(j);
+      jobsByServer.set(bs.serverId, arr);
+    }
+  }
+  const covers = (serverId, vmid) => (jobsByServer.get(serverId) || []).some((j) => {
+    if (j.all) return true;
+    const raw = j.vmid == null ? '' : String(j.vmid);
+    if (!raw.trim()) return false;
+    return raw.split(',').map((x) => Number(String(x).trim()))
+      .filter((x) => Number.isFinite(x) && x > 0).includes(Number(vmid));
+  });
+  for (const s of (state.status && state.status.servers) || []) {
+    if (!s.online || !healthServerOk(s.id)) continue;
+    for (const nd of (s.nodes || [])) {
+      for (const g of [].concat(Array.isArray(nd.vms) ? nd.vms : [], Array.isArray(nd.lxc) ? nd.lxc : [])) {
+        const last = byKey.get(s.id + ':' + (g.type === 'qemu' ? 'qemu' : 'lxc') + ':' + g.id);
+        rows.push({
+          serverId: s.id, serverName: s.name, node: nd.name,
+          type: g.type === 'qemu' ? 'qemu' : 'lxc', vmid: g.id, name: g.name || ('Guest ' + g.id),
+          lastCtime: last ? last.ctime : null,
+          daysSince: last && last.ctime ? Math.floor((nowS - last.ctime) / 86400) : null,
+          covered: last ? true : covers(s.id, g.id),
+        });
+      }
+    }
+  }
+  rows.sort((a, b) => {
+    if (a.daysSince === null && b.daysSince !== null) return 1;
+    if (a.daysSince !== null && b.daysSince === null) return -1;
+    return (b.daysSince || 0) - (a.daysSince || 0);
+  });
+  return rows;
+}
+
+function healthBackupHtml(rows, errors) {
+  const set = healthSettings().backupAge;
+  return rows.map((r) => {
+    let cls = 'ok';
+    let label;
+    if (r.daysSince === null) {
+      cls = 'dim';
+      label = r.covered ? t('health.backupPending.short') : t('health.backupNone.short');
+    } else if (r.daysSince >= set.criticalDays) {
+      cls = 'bad';
+      label = t('health.backupAge.short', { days: r.daysSince });
+    } else if (r.daysSince >= set.warningDays) {
+      cls = 'warn';
+      label = t('health.backupAge.short', { days: r.daysSince });
+    } else {
+      label = t('health.backupAge.short', { days: r.daysSince });
+    }
+    return '<div class="health-row">' +
+      '<div class="health-row-head">' +
+        '<span class="health-row-name">' + esc(r.name) + '</span>' +
+        '<span class="health-row-state ' + cls + '">' + esc(label) + '</span>' +
+      '</div>' +
+      '<div class="health-row-meta">' + esc(r.serverName) + ' · ' + esc(r.node) + ' · ' + (r.type === 'qemu' ? t('vms') : t('lxc')) + ' ' + r.vmid + '</div>' +
+    '</div>';
+  }).join('') + healthPartialNote(errors);
+}
+
+function healthClusterHtml(entries, errors) {
+  return entries.map((c) => {
+    const services = (c.ha && Array.isArray(c.ha.services) && c.ha.services.length) ? c.ha.services : (c.haResources || []);
+    const rows = services.map((sv) => {
+      const st = sv.state || '?';
+      const cls = st === 'error' ? 'bad' : (st === 'stopped' ? 'warn' : 'ok');
+      return '<div class="health-row">' +
+        '<div class="health-row-head">' +
+          '<span class="health-row-name">' + esc(sv.sid || '?') + '</span>' +
+          '<span class="health-row-state ' + cls + '">' + esc(st) + '</span>' +
+        '</div>' +
+        '<div class="health-row-meta">' + esc(sv.node || '') + (sv.status ? ' · ' + esc(sv.status) : '') + '</div>' +
+      '</div>';
+    }).join('');
+    return '<div class="health-server glass">' +
+      '<div class="health-server-head">' +
+        '<span class="health-server-name">' + esc(c.serverName || c.serverId) + '</span>' +
+        '<span class="health-server-state ' + (c.quorate === 0 ? 'offline' : 'online') + '">' + (c.quorate === 0 ? t('health.quorumLost.short') : t('health.quorumOk.short')) + '</span>' +
+      '</div>' +
+      (c.ha && c.ha.managerStatus ? '<div class="health-row-meta">' + t('health.haManager') + ': ' + esc(c.ha.managerStatus) + '</div>' : '') +
+      rows +
+    '</div>';
+  }).join('') + healthPartialNote(errors);
+}
+
 function renderHealth() {
   maybeFetchHealthTasks(); /* on-demand, TTL 60s, solo a vista aperta */
+  maybeFetchHealthSources(); /* storage/cluster/zfs/backup: on-demand + TTL */
   const h = state.health;
   const updatedEl = $('healthUpdated');
   if (!h) {
@@ -4267,6 +4877,11 @@ function renderHealth() {
     $('healthAttentionSection').hidden = true;
     $('healthInfoSection').hidden = true;
     $('healthInfraSection').hidden = true;
+    $('healthFilters').hidden = true;
+    $('healthStorageSection').hidden = true;
+    $('healthZfsSection').hidden = true;
+    $('healthBackupSection').hidden = true;
+    $('healthClusterSection').hidden = true;
     $('healthEmpty').hidden = true;
     return;
   }
@@ -4287,23 +4902,92 @@ function renderHealth() {
   $('healthCardServer').textContent = h.summary.serversOnline + ' / ' + h.summary.serversTotal;
   $('healthCardGuest').textContent = h.summary.guestsRunning + ' / ' + h.summary.guestsTotal;
 
-  const attention = h.alerts.filter((a) => a.severity === 'critical' || a.severity === 'warning');
-  const infos = h.alerts.filter((a) => a.severity === 'info');
+  /* filtri: solo client-side, nessun fetch */
+  populateHealthServerFilter();
+  $('healthFilters').hidden = !((state.status && state.status.servers) || []).length;
+
+  const attentionTotal = h.alerts.filter((a) => a.severity === 'critical' || a.severity === 'warning');
+  const infosTotal = h.alerts.filter((a) => a.severity === 'info');
+  const attention = attentionTotal.filter(healthFilterOk);
+  const infos = infosTotal.filter(healthFilterOk);
+  /* preserva l'apertura dei dettagli "Perché lo vedo?" attraverso i re-render */
+  const openAttention = new Set();
+  const openInfos = new Set();
+  $('healthAttentionList').querySelectorAll('.health-alert[data-alert-id] details.health-alert-why[open]').forEach((d) => {
+    const li = d.closest('.health-alert');
+    if (li) openAttention.add(li.dataset.alertId);
+  });
+  $('healthInfoList').querySelectorAll('.health-alert[data-alert-id] details.health-alert-why[open]').forEach((d) => {
+    const li = d.closest('.health-alert');
+    if (li) openInfos.add(li.dataset.alertId);
+  });
   $('healthAttentionList').innerHTML = attention.map(healthAlertHtml).join('');
   $('healthInfoList').innerHTML = infos.map(healthAlertHtml).join('');
-  $('healthAttentionSection').hidden = attention.length === 0;
-  $('healthInfoSection').hidden = infos.length === 0;
+  $('healthAttentionList').querySelectorAll('.health-alert[data-alert-id]').forEach((li) => {
+    const d = li.querySelector('details.health-alert-why');
+    if (d && openAttention.has(li.dataset.alertId)) d.open = true;
+  });
+  $('healthInfoList').querySelectorAll('.health-alert[data-alert-id]').forEach((li) => {
+    const d = li.querySelector('details.health-alert-why');
+    if (d && openInfos.has(li.dataset.alertId)) d.open = true;
+  });
+  $('healthAttentionCount').textContent = String(attention.length);
+  $('healthInfoCount').textContent = String(infos.length);
+  $('healthAttentionSection').hidden = attentionTotal.length === 0;
+  $('healthInfoSection').hidden = infosTotal.length === 0;
 
-  $('healthInfraList').innerHTML = healthInfraHtml(h.servers);
-  $('healthInfraSection').hidden = h.servers.length === 0;
-  $('healthEmpty').hidden = attention.length > 0 || infos.length > 0;
+  const infraServers = h.servers.filter((s) => healthServerOk(s.id));
+  $('healthInfraList').innerHTML = healthInfraHtml(infraServers);
+  $('healthInfraSection').hidden = infraServers.length === 0;
+
+  /* storage */
+  const storages = (healthSourceCache.storage.data || []).filter((st) => healthServerOk(st.serverId));
+  for (const st of storages) {
+    st.ratio = typeof st.usedFraction === 'number' && Number.isFinite(st.usedFraction) ? st.usedFraction
+      : (st.total > 0 && typeof st.used === 'number') ? st.used / st.total : null;
+  }
+  $('healthStorageList').innerHTML = healthStorageHtml(storages, healthSourceCache.storage.errors);
+  $('healthStorageCount').textContent = String(storages.length);
+  $('healthStorageSection').hidden = storages.length === 0;
+
+  /* zfs */
+  const pools = (healthSourceCache.zfs.data || []).filter((p) => healthServerOk(p.serverId));
+  $('healthZfsList').innerHTML = healthZfsHtml(pools, healthSourceCache.zfs.errors);
+  $('healthZfsCount').textContent = String(pools.length);
+  $('healthZfsSection').hidden = pools.length === 0;
+
+  /* backup */
+  const bRows = healthBackupRows();
+  $('healthBackupList').innerHTML = healthBackupHtml(bRows, healthSourceCache.backups.errors);
+  $('healthBackupCount').textContent = String(bRows.length);
+  $('healthBackupSection').hidden = bRows.length === 0;
+
+  /* cluster: presente solo se almeno un server è realmente in cluster */
+  const clusters = (healthSourceCache.cluster.data || []).filter((c) => c.cluster === true && healthServerOk(c.serverId));
+  $('healthClusterList').innerHTML = healthClusterHtml(clusters, healthSourceCache.cluster.errors);
+  $('healthClusterSection').hidden = clusters.length === 0;
+
+  /* stato iniziale aperto/collassato: solo al primo render con le fonti
+     on-demand arrivate; dopo, il toggle dell'utente non viene più toccato */
+  if (!healthSectionsInit) {
+    /* tutte e quattro le fonti devono essere arrivate (o fallite con
+       data non-null), altrimenti lo stato iniziale sarebbe calcolato
+       con sezioni ancora vuote */
+    const sourcesReady = ['storage', 'cluster', 'zfs', 'backups']
+      .every((k) => healthSourceCache[k].data !== null);
+    if (sourcesReady) {
+      healthSectionsInit = true;
+      $('healthStorageSection').open = storages.length > 0;
+      $('healthZfsSection').open = h.alerts.some((a) => a.category === 'zfs' && a.severity !== 'info');
+      $('healthBackupSection').open = h.alerts.some((a) => a.category === 'backup' && a.severity !== 'info');
+      $('healthClusterSection').open = h.alerts.some((a) => a.category === 'cluster' || a.category === 'ha');
+    }
+  }
+
+  $('healthEmpty').hidden = attentionTotal.length > 0 || infosTotal.length > 0;
 
   const taskNote = $('healthTaskNote');
-  if (healthTaskCache.error) {
-    taskNote.hidden = false;
-  } else {
-    taskNote.hidden = true;
-  }
+  taskNote.hidden = !healthTaskCache.error;
 }
 
 function healthGuestModes() {
@@ -4342,8 +5026,164 @@ async function maybeFetchHealthTasks() {
 /* ricalcola Health con la NUOVA sorgente task (seconda valutazione ammessa:
    non è una duplicazione nello stesso status tick). */
 function refreshHealthFromTasks() {
-  state.health = evaluateHealth(state.status, healthGuestModes(), healthTaskCache.data || []);
+  state.health = evaluateHealth(state.status, healthGuestModes(), healthTaskCache.data || [], healthExtrasPayload(), healthSettings());
   if (currentView === 'health') renderHealth();
+}
+
+/* ricalcola Health quando arriva una fonte on-demand V2 (storage/zfs/cluster/backup):
+   seconda valutazione ammessa, mai una duplicazione nello stesso status tick. */
+function refreshHealthFromExtras() {
+  state.health = evaluateHealth(state.status, healthGuestModes(), healthTaskCache.data || [], healthExtrasPayload(), healthSettings());
+  if (currentView === 'health') renderHealth();
+}
+
+/* ---------- fonti on-demand Health V2: fetch solo a vista aperta, TTL ----------
+   NESSUN timer globale: il re-check avviene nel normale ciclo di renderHealth
+   (richiamato a ogni refresh dello status quando la vista è aperta). */
+
+const HEALTH_SOURCE_TTL = { storage: 60000, cluster: 60000, zfs: 120000, backups: 60000 };
+
+const healthSourceCache = {
+  storage: { at: 0, data: null, errors: [], fetching: false },
+  cluster: { at: 0, data: null, errors: [], fetching: false },
+  zfs: { at: 0, data: null, errors: [], fetching: false },
+  backups: { at: 0, data: null, errors: [], fetching: false },
+};
+
+function healthExtrasPayload() {
+  return {
+    storages: healthSourceCache.storage.data || [],
+    pools: healthSourceCache.zfs.data || [],
+    clusters: healthSourceCache.cluster.data || [],
+    backups: healthSourceCache.backups.data || [],
+  };
+}
+
+async function maybeFetchHealthSources() {
+  if (currentView !== 'health') return;
+  if (document.visibilityState === 'hidden') return;
+  const now = Date.now();
+  const tasks = [];
+  for (const key of Object.keys(HEALTH_SOURCE_TTL)) {
+    const c = healthSourceCache[key];
+    if (!c.fetching && now - c.at >= HEALTH_SOURCE_TTL[key]) {
+      if (key === 'storage') tasks.push(fetchHealthStorage());
+      else if (key === 'cluster') tasks.push(fetchHealthCluster());
+      else if (key === 'zfs') tasks.push(fetchHealthZfs());
+      else tasks.push(fetchHealthBackups());
+    }
+  }
+  if (tasks.length) await Promise.all(tasks);
+}
+
+async function fetchHealthStorage() {
+  const c = healthSourceCache.storage;
+  if (c.fetching) return;
+  c.fetching = true;
+  try {
+    const d = await backupFetch('/api/health/storage');
+    c.data = d.storages || [];
+    c.errors = d.errors || [];
+    c.at = Date.now();
+  } catch (e) {
+    c.errors = [{ error: e.message }];
+    c.data = c.data || [];
+    c.at = Date.now();
+  } finally {
+    c.fetching = false;
+    refreshHealthFromExtras();
+  }
+}
+
+async function fetchHealthCluster() {
+  const c = healthSourceCache.cluster;
+  if (c.fetching) return;
+  c.fetching = true;
+  try {
+    const d = await backupFetch('/api/health/cluster');
+    c.data = d.servers || [];
+    c.errors = d.errors || [];
+    c.at = Date.now();
+  } catch (e) {
+    c.errors = [{ error: e.message }];
+    c.data = c.data || [];
+    c.at = Date.now();
+  } finally {
+    c.fetching = false;
+    refreshHealthFromExtras();
+  }
+}
+
+async function fetchHealthZfs() {
+  const c = healthSourceCache.zfs;
+  if (c.fetching) return;
+  c.fetching = true;
+  try {
+    const d = await backupFetch('/api/health/zfs');
+    c.data = d.pools || [];
+    c.errors = d.errors || [];
+    c.at = Date.now();
+  } catch (e) {
+    c.errors = [{ error: e.message }];
+    c.data = c.data || [];
+    c.at = Date.now();
+  } finally {
+    c.fetching = false;
+    refreshHealthFromExtras();
+  }
+}
+
+/* backup health: riusa backupCache di Backup & Snapshot quando fresca (TTL 60s);
+   altrimenti fetch on-demand di archivi + job per server. */
+async function fetchHealthBackups() {
+  const c = healthSourceCache.backups;
+  if (c.fetching) return;
+  c.fetching = true;
+  const now = Date.now();
+  const { targets, errors } = backupServerTargets();
+  const results = [];
+  const partial = [...errors];
+  try {
+    await Promise.all(targets.map(async (srv) => {
+      const sid = encodeURIComponent(srv.id);
+      const entry = { serverId: srv.id, serverName: srv.name, backups: [], jobs: [] };
+      const bc = backupCache.backups.get(srv.id);
+      if (bc && now - bc.at < HEALTH_SOURCE_TTL.backups) {
+        entry.backups = bc.data || [];
+      } else {
+        try {
+          const d = await backupFetch('/api/backup/list?serverId=' + sid);
+          backupCache.backups.set(srv.id, { at: Date.now(), data: d.backups || [], error: null });
+          entry.backups = d.backups || [];
+        } catch (e) {
+          partial.push({ serverId: srv.id, serverName: srv.name, error: e.message });
+        }
+      }
+      const jc = backupCache.jobs.get(srv.id);
+      if (jc && now - jc.at < HEALTH_SOURCE_TTL.backups) {
+        entry.jobs = jc.data || [];
+      } else {
+        try {
+          const d = await backupFetch('/api/backup/jobs?serverId=' + sid);
+          backupCache.jobs.set(srv.id, { at: Date.now(), data: d.jobs || [], error: null });
+          entry.jobs = d.jobs || [];
+        } catch (e) {
+          partial.push({ serverId: srv.id, serverName: srv.name, error: e.message });
+        }
+      }
+      results.push(entry);
+    }));
+    c.data = results;
+    c.errors = partial;
+    c.at = Date.now();
+  } catch (e) {
+    c.errors = [...partial, { error: e.message }];
+    c.data = c.data || [];
+    c.at = Date.now();
+  } finally {
+    c.fetching = false;
+    refreshHealthFromExtras();
+  }
 }
 
 /* azioni alert: riusano ESATTAMENTE i meccanismi esistenti */
@@ -4403,6 +5243,99 @@ $('guestHealthMode').addEventListener('change', async (e) => {
     select.disabled = false;
   }
 });
+
+/* ---------- Health V2: filtri (solo client-side) e soglie configurabili ---------- */
+
+$('healthSeverityFilter').addEventListener('click', (e) => {
+  const btn = e.target.closest('.health-filter-btn');
+  if (!btn) return;
+  healthFilters.severity = btn.dataset.sev;
+  document.querySelectorAll('#healthSeverityFilter .health-filter-btn').forEach((b) => {
+    b.classList.toggle('active', b === btn);
+    b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
+  });
+  if (currentView === 'health') renderHealth();
+});
+
+$('healthServerFilter').addEventListener('change', () => {
+  healthFilters.server = $('healthServerFilter').value;
+  if (currentView === 'health') renderHealth();
+});
+
+function healthSettingsInputs() {
+  return {
+    storageWarning: $('hsStorageWarning'),
+    storageCritical: $('hsStorageCritical'),
+    backupWarning: $('hsBackupWarning'),
+    backupCritical: $('hsBackupCritical'),
+    swapWarning: $('hsSwapWarning'),
+    swapCritical: $('hsSwapCritical'),
+  };
+}
+
+function updateHealthSettingsUI() {
+  const s = state.config && state.config.health && state.config.health.settings;
+  const inp = healthSettingsInputs();
+  const d = HEALTH_SETTING_DEFAULTS;
+  inp.storageWarning.value = (s && s.storage && Number.isFinite(Number(s.storage.warning))) ? s.storage.warning : d.storage.warning;
+  inp.storageCritical.value = (s && s.storage && Number.isFinite(Number(s.storage.critical))) ? s.storage.critical : d.storage.critical;
+  inp.backupWarning.value = (s && s.backupAge && Number.isFinite(Number(s.backupAge.warningDays))) ? s.backupAge.warningDays : d.backupAge.warningDays;
+  inp.backupCritical.value = (s && s.backupAge && Number.isFinite(Number(s.backupAge.criticalDays))) ? s.backupAge.criticalDays : d.backupAge.criticalDays;
+  inp.swapWarning.value = (s && s.swap && Number.isFinite(Number(s.swap.warning))) ? s.swap.warning : d.swap.warning;
+  inp.swapCritical.value = (s && s.swap && Number.isFinite(Number(s.swap.critical))) ? s.swap.critical : d.swap.critical;
+}
+
+$('btnHealthSave').onclick = async () => {
+  const inp = healthSettingsInputs();
+  const body = {
+    storage: { warning: Number(inp.storageWarning.value), critical: Number(inp.storageCritical.value) },
+    backupAge: { warningDays: Number(inp.backupWarning.value), criticalDays: Number(inp.backupCritical.value) },
+    swap: { warning: Number(inp.swapWarning.value), critical: Number(inp.swapCritical.value) },
+  };
+  const hsError = $('hsError');
+  hsError.hidden = true;
+  try {
+    const res = await fetch('/api/health/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Errore');
+    if (!state.config.health || typeof state.config.health !== 'object') state.config.health = {};
+    state.config.health.settings = data.settings;
+    updateHealthSettingsUI();
+    refreshHealthFromExtras();
+    toast(t('health.settings.saved'), 'ok');
+  } catch (err) {
+    hsError.textContent = err.message;
+    hsError.hidden = false;
+    toast(err.message, 'err');
+  }
+};
+
+$('btnHealthReset').onclick = async () => {
+  const hsError = $('hsError');
+  hsError.hidden = true;
+  try {
+    const res = await fetch('/api/health/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset: true }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Errore');
+    if (!state.config.health || typeof state.config.health !== 'object') state.config.health = {};
+    state.config.health.settings = data.settings;
+    updateHealthSettingsUI();
+    refreshHealthFromExtras();
+    toast(t('health.settings.resetDone'), 'ok');
+  } catch (err) {
+    hsError.textContent = err.message;
+    hsError.hidden = false;
+    toast(err.message, 'err');
+  }
+};
 
 /* registrazione service worker (solo in secure context) */
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {

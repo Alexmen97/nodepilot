@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=16">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -374,22 +374,80 @@
         </div>
       </div>
 
-      <div class="health-sub glass" id="healthAttentionSection" hidden>
-        <h3 class="health-sub-title" data-i18n="health.section.attention">Richiede attenzione</h3>
-        <div class="health-alert-list" id="healthAttentionList" role="list"></div>
+      <div class="health-filters glass" id="healthFilters" hidden>
+        <div class="health-filter-group" id="healthSeverityFilter" role="group" aria-label="Filtro severità">
+          <button type="button" class="health-filter-btn active" data-sev="all" aria-pressed="true" data-i18n="health.filter.all">Tutti</button>
+          <button type="button" class="health-filter-btn" data-sev="critical" aria-pressed="false" data-i18n="health.filter.critical">Critici</button>
+          <button type="button" class="health-filter-btn" data-sev="warning" aria-pressed="false" data-i18n="health.filter.warning">Avvisi</button>
+          <button type="button" class="health-filter-btn" data-sev="info" aria-pressed="false" data-i18n="health.filter.info">Info</button>
+        </div>
+        <select id="healthServerFilter" class="select-input health-filter-select" aria-label="Filtro server">
+          <option value="all" data-i18n="health.filter.serverAll">Tutti i server</option>
+        </select>
       </div>
 
-      <div class="health-sub glass" id="healthInfoSection" hidden>
-        <h3 class="health-sub-title" data-i18n="health.section.info">Informazioni recenti</h3>
+      <details class="health-sub glass" id="healthAttentionSection" open>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.attention">Richiede attenzione</h3>
+          <span class="health-sec-count" id="healthAttentionCount">0</span>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div class="health-alert-list" id="healthAttentionList" role="list"></div>
+      </details>
+
+      <details class="health-sub glass" id="healthInfoSection">
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.info">Informazioni recenti</h3>
+          <span class="health-sec-count" id="healthInfoCount">0</span>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
         <div class="health-alert-list" id="healthInfoList" role="list"></div>
-      </div>
+      </details>
 
       <div class="health-task-note" id="healthTaskNote" hidden data-i18n="health.tasksUnavailable">Task non disponibili</div>
 
-      <div class="health-sub glass" id="healthInfraSection" hidden>
-        <h3 class="health-sub-title" data-i18n="health.section.infra">Infrastruttura</h3>
+      <details class="health-sub glass" id="healthInfraSection" open>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.infra">Infrastruttura</h3>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
         <div id="healthInfraList" class="health-infra-list"></div>
-      </div>
+      </details>
+
+      <details class="health-sub glass" id="healthStorageSection" hidden>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.storage">Storage</h3>
+          <span class="health-sec-count" id="healthStorageCount">0</span>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div id="healthStorageList" class="health-infra-list"></div>
+      </details>
+
+      <details class="health-sub glass" id="healthZfsSection" hidden>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.zfs">ZFS</h3>
+          <span class="health-sec-count" id="healthZfsCount">0</span>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div id="healthZfsList" class="health-infra-list"></div>
+      </details>
+
+      <details class="health-sub glass" id="healthBackupSection" hidden>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.backup">Backup</h3>
+          <span class="health-sec-count" id="healthBackupCount">0</span>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div id="healthBackupList" class="health-infra-list"></div>
+      </details>
+
+      <details class="health-sub glass" id="healthClusterSection" hidden>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.cluster">Cluster</h3>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div id="healthClusterList" class="health-infra-list"></div>
+      </details>
 
       <div class="health-empty" id="healthEmpty" hidden>
         <span class="health-empty-icon">✓</span>
@@ -565,6 +623,42 @@
             <button type="button" class="ghost-btn" id="btnLogout" data-i18n="auth.logoutBtn">Esci</button>
           </div>
           <p class="hint" data-i18n="session.info">Sessione: 12 ore di inattività / massimo 7 giorni</p>
+        </div>
+
+        <div class="field">
+          <label data-i18n="settings.health.title">MONITORAGGIO</label>
+          <p class="hint" data-i18n="settings.health.hint">Soglie per gli avvisi del Monitoraggio (Health Center). Il valore di avviso deve essere inferiore a quello critico.</p>
+          <div class="health-settings-grid">
+            <div class="toggle-row">
+              <span data-i18n="settings.health.storage.warning">Storage: soglia avviso (%)</span>
+              <input type="number" id="hsStorageWarning" class="num-input" min="1" max="99" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.storage.critical">Storage: soglia critica (%)</span>
+              <input type="number" id="hsStorageCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.backup.warning">Backup: avviso dopo (giorni)</span>
+              <input type="number" id="hsBackupWarning" class="num-input" min="1" max="365" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.backup.critical">Backup: critico dopo (giorni)</span>
+              <input type="number" id="hsBackupCritical" class="num-input" min="2" max="365" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.swap.warning">Swap: soglia avviso (%)</span>
+              <input type="number" id="hsSwapWarning" class="num-input" min="1" max="99" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.swap.critical">Swap: soglia critica (%)</span>
+              <input type="number" id="hsSwapCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" id="btnHealthReset" data-i18n="settings.health.reset">Ripristina default</button>
+            <button type="button" class="primary-btn" id="btnHealthSave" data-i18n="settings.health.save">Salva</button>
+          </div>
+          <div class="auth-error" id="hsError" role="alert" aria-live="assertive" hidden></div>
         </div>
 
       </div>
@@ -904,10 +998,10 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=17"></script>
+  <script src="i18n.js?v=18"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
-  <script src="app.js?v=24"></script>
+  <script src="app.js?v=25"></script>
   <script src="vnc-console.js?v=1"></script>
 </body>
 </html>

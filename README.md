@@ -76,7 +76,7 @@ offered; the tour can be skipped or restarted any time from
 - **Proxmox logs** — tasks, system log and cluster log, with filters and per-task detail
 - **LXC Shell** — in-browser terminal via xterm.js (termproxy/vncwebsocket), for privileged and unprivileged containers
 - **VNC Console (QEMU)** — graphical noVNC console for running VMs from the Guest Detail, proxied through the dashboard (no direct VNC ports, no Proxmox login in the browser)
-- **Health Center** — healthy/warning/critical status, thresholds, expected state and task alerts
+- **Health Center V2** — node, storage, ZFS, backup and cluster/HA health with a "why am I seeing this?" detail, configurable thresholds and client-side filters
 - **Backup & Snapshot Manager V1** — backups, snapshots, storages and scheduled jobs, with guided creation and UPID tracking (read + create)
 - **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
 - **Change password** — update the dashboard password from Settings; all sessions are invalidated and a new sign-in is required
@@ -142,6 +142,10 @@ verifyTls), or create `config.json` from `config.example.json`:
 - Optional `health.guestModes` maps `<serverId>:<node>:<type>:<vmid>`
   (`qemu` or `lxc`) to `alwayson` or `ignore` for Health Center
   expected states; `manual` is the default.
+- Optional `health.settings` configures the Health Center thresholds
+  (storage usage, backup age in days, swap usage); missing groups fall back
+  to the built-in defaults. Values can also be changed from
+  **Settings → Monitoring**.
 
 ## Security
 
