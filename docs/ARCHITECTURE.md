@@ -61,7 +61,7 @@ nodepilot
 | POST | `/api/auth/change-password` | change the dashboard password (auth required; invalidates all sessions) |
 | POST | `/api/tasks/status` | one request / one response task status |
 | POST | `/api/health/prefs` | Health Center expected state per guest |
-| GET | `/api/health/storage`, `/api/health/zfs`, `/api/health/cluster` | Health V2 read-only sources (storage usage, ZFS pools, cluster/HA) |
+| GET | `/api/health/storage`, `/api/health/zfs`, `/api/health/cluster`, `/api/health/disks`, `/api/health/smart` | Health V2 read-only sources (storage usage, ZFS pools, cluster/HA, disk inventory, on-demand SMART) |
 | POST | `/api/health/settings` | Health V2 configurable thresholds (storage %, backup age days, swap %) |
 | POST | `/api/auth/login`, `/api/auth/logout`; GET `/api/auth/session` | local authentication |
 | POST | `/api/vnc/prep` | QEMU console: creates the Proxmox vncproxy and returns an opaque single-use prepId + temporary RFB credentials |
@@ -169,7 +169,7 @@ noVNC (public/vendor/novnc) -> dashboard backend -> Proxmox /vncproxy
 
 ## 7. PWA and caching (sw.js)
 
-- Versioned cache (`CACHE = 'nodepilot-v5'`, bumped per release that changes
+- Versioned cache (`CACHE = 'nodepilot-v6'`, bumped per release that changes
   frontend assets); `index.html` references assets with incremental query
   versions (`app.js?v=N`, `style.css?v=N`, `i18n.js?v=N`).
 - HTML navigations: network-first, cache fallback only when offline.
@@ -200,9 +200,10 @@ noVNC (public/vendor/novnc) -> dashboard backend -> Proxmox /vncproxy
 - Read-only view derived from two source tiers: the already-collected status
   data (zero extra Proxmox calls for node/guest metrics) and dedicated
   on-demand sources (`/api/health/storage`, `/api/health/zfs`,
-  `/api/health/cluster`, backup archives/jobs) fetched only while the view is
-  open with frontend TTLs (60 s storage/cluster/backups, 120 s ZFS) — no
-  second polling loop and no new global timers.
+  `/api/health/cluster`, backup archives/jobs, disk inventory) fetched only
+  while the view is open with frontend TTLs (60 s storage/cluster/backups,
+  120 s ZFS, 5 min disk inventory) — no second polling loop and no new global
+  timers.
 - `evaluateHealth(status, guestModes, taskAlerts, extras, settings)` is pure
   (no side effects). Node metrics (CPU, RAM, rootfs, swap, load average) are
   pass-through from the existing `/nodes/{node}/status` call; PVE 9.2
@@ -225,16 +226,32 @@ noVNC (public/vendor/novnc) -> dashboard backend -> Proxmox /vncproxy
 - Cluster/HA: `/cluster/status` distinguishes standalone from cluster;
   quorum loss is critical, HA service `error` is critical and a stopped HA
   resource is a warning. Standalone installs get no cluster section and no
-  false warnings. Replication, SMART, disk temperatures and sensors are out
-  of scope for V2.
+  false warnings. Replication and sensors are out of scope.
+- Disks/SMART (V2.1): the inventory endpoint uses
+  `/nodes/{node}/disks/list?skipsmart=1` only — opening Monitoring never runs
+  smartctl and never wakes disks (`smartAvailable: null` = "not checked").
+  `GET /api/health/smart` runs Proxmox `disks/smart` for ONE disk, only on
+  user expansion, validates the devpath against the node inventory and
+  normalizes health (PASSED/OK/FAILED/UNKNOWN/SMART_DISABLED), ATA
+  attributes (name lookup with numeric-ID fallback) and NVMe/SAS text fields
+  (conservative parsing, never alerting on unparsable lines). Frontend:
+  inventory TTL 5 min, per-disk SMART cache TTL 15 min with no automatic
+  refetch on expiry (stale marker + manual re-expansion), FIFO queue with
+  concurrency 1. Alerts exist only when a SMART reading is cached; FAILED is
+  immediate CRITICAL, sector counters > 0 are immediate WARNING, remaining
+  life ≤ warning% (default 10) is WARNING and ≤ 5% fixed CRITICAL,
+  temperature uses the 2-sample hysteresis with the configurable 55/65 °C
+  defaults; UNKNOWN/SMART_DISABLED are INFO, "not checked" generates nothing.
 - Backup health: last archive age per guest from the storage-content source
   of truth (WARNING after the configurable warning days, CRITICAL after the
   critical days); guests covered by an enabled job without archives yet and
   guests without any job stay INFO (no false critical).
-- Configurable thresholds: only storage usage (%), backup age (days) and swap
-  (%) via `POST /api/health/settings`, persisted in `config.json →
-  health.settings` (never touching `health.guestModes`), with defaults
-  85/90, 7/14, 80/90 and a "reset defaults" action in Settings → Monitoring.
+- Configurable thresholds: storage usage (%), backup age (days), swap (%)
+  and disks (temperature warning/critical, remaining-life warning) via
+  `POST /api/health/settings`, persisted in `config.json → health.settings`
+  (never touching `health.guestModes`), with defaults 85/90, 7/14, 80/90,
+  55/65 °C, 10% and a "reset defaults" action in Settings → Monitoring. The
+  remaining-life critical threshold is fixed at 5%.
 - Expected state per guest: `Manual` (default) / `Always On` (stopped →
   critical) / `Ignore`.
 - Task alerts: on-demand `/api/logs/tasks` only while the view is open, 24 h

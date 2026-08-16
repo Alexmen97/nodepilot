@@ -6,6 +6,28 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## Unreleased — Health Center V2.1 (Disk / SMART)
+
+Status: **In sviluppo** — implementazione completata, non ancora rilasciata
+
+- sezione Dischi / SMART in Monitoraggio: inventory dischi via
+  `disks/list?skipsmart=1` (mai smartctl all'apertura, zero risvegli HDD);
+- SMART detail on-demand per singolo disco (`GET /api/health/smart`) con
+  validazione sull'inventory del nodo e risposta normalizzata
+  (health/type/temperatura/ore di accensione/vita residua/settori);
+- stato "Non controllato" distinto da UNKNOWN/SMART_DISABLED: nessun alert
+  finché il disco non è stato realmente letto;
+- alert: SMART FAILED → CRITICAL immediato; pending/reallocated/uncorrectable
+  > 0 → WARNING; vita residua ≤ 10% WARNING e ≤ 5% CRITICAL fisso;
+  temperatura con isteresi a 2 campioni (default 55/65 °C);
+- cache frontend: inventory TTL 5 min, SMART per disco TTL 15 min senza
+  auto-refetch (indicatore dato non recente), coda FIFO con concorrenza 1;
+- parsing ATA per nome+ID e NVMe/SAS conservativo; "Mostra SMART completo"
+  collassabile con attributi raw o testo;
+- 3 nuove soglie configurabili (temp warning/critical, vita residua warning)
+  con ripristino default;
+- PWA: cache `nodepilot-v6` (`app.js?v=26`, `style.css?v=17`, `i18n.js?v=19`).
+
 ## Unreleased — Health Center V2.0 Core
 
 Status: **In sviluppo** — implementazione completata, non ancora rilasciata

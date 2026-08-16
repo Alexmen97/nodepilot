@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=16">
+  <link rel="stylesheet" href="style.css?v=17">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -432,6 +432,15 @@
         <div id="healthZfsList" class="health-infra-list"></div>
       </details>
 
+      <details class="health-sub glass" id="healthDiskSection" hidden>
+        <summary class="health-sub-summary">
+          <h3 class="health-sub-title" data-i18n="health.section.disks">Dischi / SMART</h3>
+          <span class="health-sec-count" id="healthDiskCount">0</span>
+          <span class="health-sub-caret" aria-hidden="true">▾</span>
+        </summary>
+        <div id="healthDiskList" class="health-infra-list"></div>
+      </details>
+
       <details class="health-sub glass" id="healthBackupSection" hidden>
         <summary class="health-sub-summary">
           <h3 class="health-sub-title" data-i18n="health.section.backup">Backup</h3>
@@ -652,6 +661,18 @@
             <div class="toggle-row">
               <span data-i18n="settings.health.swap.critical">Swap: soglia critica (%)</span>
               <input type="number" id="hsSwapCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.disk.temp.warning">Dischi: temperatura avviso (°C)</span>
+              <input type="number" id="hsDiskTempWarning" class="num-input" min="20" max="90" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.disk.temp.critical">Dischi: temperatura critica (°C)</span>
+              <input type="number" id="hsDiskTempCritical" class="num-input" min="21" max="95" step="1" inputmode="numeric">
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.health.disk.wear.warning">Dischi: vita residua avviso (%)</span>
+              <input type="number" id="hsDiskWearWarning" class="num-input" min="6" max="100" step="1" inputmode="numeric">
             </div>
           </div>
           <div class="form-actions">
@@ -998,10 +1019,10 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=18"></script>
+  <script src="i18n.js?v=19"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
-  <script src="app.js?v=25"></script>
+  <script src="app.js?v=26"></script>
   <script src="vnc-console.js?v=1"></script>
 </body>
 </html>

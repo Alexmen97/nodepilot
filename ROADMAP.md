@@ -35,6 +35,13 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
   minime e UI a sezioni con filtri. Implementazione locale completata,
   release in attesa di review.
 
+### Health Center V2.1 — Disk / SMART
+
+- [ ] Disk inventory senza smartctl (skipsmart=1) e SMART detail on-demand
+  per singolo disco (concorrenza 1, TTL 5/15 min senza auto-refetch),
+  alert FAILED/settori/vita residua/temperatura, stato "Non controllato"
+  distinto da UNKNOWN. Implementazione locale in corso.
+
 ### Stabilization & Hardening V1.1
 
 Consolidamento del progetto prima delle prossime macro-feature:

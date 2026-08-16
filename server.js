@@ -598,19 +598,39 @@ function safeGuestModes() {
   return m;
 }
 
-/* Health V2.0 Core: soglie configurabili (solo storage, età backup, swap).
+/* Health: soglie configurabili (storage, età backup, swap, dischi V2.1).
    Default centralizzati; validazione warning < critical con range sensati. */
 const HEALTH_SETTING_DEFAULTS = {
   storage: { warning: 85, critical: 90 },
   backupAge: { warningDays: 7, criticalDays: 14 },
   swap: { warning: 80, critical: 90 },
+  disk: { temp: { warning: 55, critical: 65 }, wear: { warning: 10 } },
 };
 
 const HEALTH_SETTING_VALIDATORS = {
   storage: (v) => v.warning >= 1 && v.warning <= 99 && v.critical >= 2 && v.critical <= 100 && v.warning < v.critical,
   backupAge: (v) => v.warningDays >= 1 && v.warningDays <= 365 && v.criticalDays >= 2 && v.criticalDays <= 365 && v.warningDays < v.criticalDays,
   swap: (v) => v.warning >= 1 && v.warning <= 99 && v.critical >= 2 && v.critical <= 100 && v.warning < v.critical,
+  /* wear critical resta FISSO a 5: solo il warning è configurabile (> 5) */
+  disk: (v) => v.temp.warning >= 20 && v.temp.warning <= 90 &&
+    v.temp.critical >= 21 && v.temp.critical <= 95 && v.temp.warning < v.temp.critical &&
+    v.wear.warning > 5 && v.wear.warning <= 100,
 };
+
+/* merge ricorsivo default + valori utente (gruppi annidati come disk.temp) */
+function mergeSetting(def, user) {
+  if (def && typeof def === 'object' && !Array.isArray(def)) {
+    const out = {};
+    for (const key of Object.keys(def)) {
+      const u = user && typeof user === 'object' && !Array.isArray(user) ? user[key] : undefined;
+      out[key] = (def[key] && typeof def[key] === 'object' && !Array.isArray(def[key]))
+        ? mergeSetting(def[key], u)
+        : (Number.isFinite(Number(u)) ? Number(u) : def[key]);
+    }
+    return out;
+  }
+  return def;
+}
 
 /* merge default + config.json; un gruppo invalido (es. config editata a mano)
    ricade sui default. Non tocca mai health.guestModes. */
@@ -620,12 +640,8 @@ function safeHealthSettings() {
   const out = {};
   for (const [group, def] of Object.entries(HEALTH_SETTING_DEFAULTS)) {
     const user = s[group] && typeof s[group] === 'object' && !Array.isArray(s[group]) ? s[group] : {};
-    const merged = {};
-    for (const key of Object.keys(def)) {
-      const raw = user[key];
-      merged[key] = Number.isFinite(Number(raw)) ? Number(raw) : def[key];
-    }
-    out[group] = HEALTH_SETTING_VALIDATORS[group](merged) ? merged : { ...def };
+    const merged = mergeSetting(def, user);
+    out[group] = HEALTH_SETTING_VALIDATORS[group](merged) ? merged : JSON.parse(JSON.stringify(def));
   }
   return out;
 }
@@ -749,6 +765,122 @@ async function guestExists(server, node, vmid) {
   }
   return false;
 }
+
+/* ---------- Health V2.1: parsing SMART (puro, testabile) ---------- */
+
+/* primo numero di un raw ATA ("40" -> 40; "33 (Min/Max 33/33)" -> 33).
+   Parsing fallito -> null, MAI 0. */
+function parseSmartFirstNumber(raw) {
+  if (typeof raw !== 'string') return null;
+  const m = /^[ \t]*(-?[0-9]+(?:[.][0-9]+)?)/.exec(raw);
+  return m ? Number(m[1]) : null;
+}
+
+/* lookup attributo ATA: ID numerico prima, nome (regex) come fallback.
+   I vendor usano nomi diversi: nessun nome è assunto come unico. */
+function smartFindAttr(attrs, ids, namePattern) {
+  if (!Array.isArray(attrs)) return null;
+  const normId = (s) => String(s == null ? '' : s).trim();
+  for (const a of attrs) {
+    if (ids.includes(normId(a.id))) return a;
+  }
+  for (const a of attrs) {
+    if (namePattern.test(String(a.name || ''))) return a;
+  }
+  return null;
+}
+
+/* normalizzazione health SMART: PASSED/OK sani, FAILED critico,
+   UNKNOWN e SMART Disabled informativi. Mai inventare severità. */
+function normalizeSmartHealth(h) {
+  if (h === null || h === undefined) return 'UNKNOWN';
+  const v = String(h).trim();
+  if (/^PASSED$/i.test(v)) return 'PASSED';
+  if (/^OK$/i.test(v)) return 'OK';
+  if (/^FAILED|^FAILING_NOW/i.test(v)) return 'FAILED';
+  if (/^SMART[ ]+Disabled/i.test(v)) return 'SMART_DISABLED';
+  return 'UNKNOWN';
+}
+
+/* registri wear ATA (stessa lista del sorgente PVE Diskmanage.pm, per coerenza
+   col campo wearout di disks/list); value normalizzato = vita residua stimata.
+   Nessun registro -> null (es. HDD o SSD vendor senza wear). */
+const SMART_WEAR_REGISTERS = [
+  /Media_Wearout_Indicator/i, /SSD_Life_Left/i, /Wear_Leveling_Count/i,
+  /Perc_Write.Erase_Ct_BC/i, /Perc_Rated_Life_Remain/i, /Remaining_Lifetime_Perc/i,
+  /Percent_Lifetime_Remain/i, /Lifetime_Left/i, /PCT_Life_Remaining/i,
+  /Lifetime_Remaining/i, /Percent_Life_Remaining/i, /Percent_Lifetime_Used/i,
+  /Perc_Rated_Life_Used/i,
+];
+
+/* parsing conservativo NVMe/SAS dal testo smartctl (solo righe note
+   dell'audit). Riga non riconosciuta -> nessun alert derivato. */
+function parseSmartTextFields(text) {
+  const out = { temperature: null, wearRemaining: null, powerOnHours: null };
+  if (typeof text !== 'string' || !text.trim()) return out;
+  let m;
+  /* NVMe Log 0x02 */
+  if ((m = /^Temperature:[ \t]*([0-9]+)[ \t]*Celsius/im.exec(text))) out.temperature = Number(m[1]);
+  if ((m = /^Percentage Used(?:[ \t]+endurance indicator)?:[ \t]*([0-9]+(?:[.][0-9]+)?)[ \t]*%/im.exec(text))) {
+    out.wearRemaining = Math.max(0, Math.min(100, 100 - Number(m[1])));
+  }
+  if ((m = /^Power On Hours:[ \t]*([0-9]+)/im.exec(text))) out.powerOnHours = Number(m[1]);
+  /* SAS */
+  if (out.temperature === null && (m = /Current Drive Temperature:[ \t]*([0-9]+)[ \t]*C/im.exec(text))) {
+    out.temperature = Number(m[1]);
+  }
+  return out;
+}
+
+/* lettura SMART normalizzata per il frontend: mai la risposta PVE grezza
+   come struttura primaria. checkedAt in secondi epoch. */
+function normalizeSmartReading(raw) {
+  const out = {
+    checkedAt: Math.floor(Date.now() / 1000),
+    health: normalizeSmartHealth(raw && raw.health),
+    smartAvailable: !!(raw && (raw.health !== undefined || raw.attributes || raw.text)),
+    type: raw && typeof raw.type === 'string' ? raw.type : null,
+    temperature: null,
+    powerOnHours: null,
+    wearRemaining: null,
+    reallocated: null,
+    pending: null,
+    offlineUncorrectable: null,
+    rawAttributes: null,
+    rawText: null,
+  };
+  if (!raw || typeof raw !== 'object') return out;
+  const attrs = Array.isArray(raw.attributes) ? raw.attributes : [];
+  if (raw.type === 'ata' && attrs.length) {
+    const re = smartFindAttr(attrs, ['5'], /^Reallocated_Sector/i);
+    out.reallocated = re ? parseSmartFirstNumber(re.raw) : null;
+    const pe = smartFindAttr(attrs, ['197'], /^Current_Pending_Sector/i);
+    out.pending = pe ? parseSmartFirstNumber(pe.raw) : null;
+    const oe = smartFindAttr(attrs, ['198'], /^Offline_Uncorrectable|^Offline_Scan_UNC/i);
+    out.offlineUncorrectable = oe ? parseSmartFirstNumber(oe.raw) : null;
+    const po = smartFindAttr(attrs, ['9'], /^Power_On_Hours|^Power-On_Hours/i);
+    out.powerOnHours = po ? parseSmartFirstNumber(po.raw) : null;
+    const te = smartFindAttr(attrs, ['194'], /^Temperature_Celsius|^Airflow_Temperature|^Temperature_Case|^Temperature_Internal|^Temperature$/i);
+    out.temperature = te ? parseSmartFirstNumber(te.raw) : null;
+    for (const re of SMART_WEAR_REGISTERS) {
+      const wa = attrs.find((a) => re.test(String(a.name || '')));
+      if (wa && Number.isFinite(Number(wa.value))) {
+        out.wearRemaining = Math.max(0, Math.min(100, Number(wa.value)));
+        break;
+      }
+    }
+    out.rawAttributes = attrs;
+  } else if (raw.type === 'text' && typeof raw.text === 'string') {
+    const parsed = parseSmartTextFields(raw.text);
+    out.temperature = parsed.temperature;
+    out.wearRemaining = parsed.wearRemaining;
+    out.powerOnHours = parsed.powerOnHours;
+    out.rawText = raw.text;
+  }
+  return out;
+}
+
+/* ---------- fine parsing SMART ---------- */
 
 /* ---------- Health V2.0 Core: helper di sola lettura ---------- */
 
@@ -1684,10 +1816,114 @@ const server = http.createServer(async (req, res) => {
       return json(res, { ok: true, servers: serversOut, errors });
     }
 
+    /* GET /api/health/disks[?serverId=<id>]
+       Inventory SOLO (disks/list?skipsmart=1): NESSUNO smartctl, nessun
+       risveglio di dischi. smartAvailable=null significa "SMART non ancora
+       letto" (mai PASSED/UNKNOWN/FAILED inventati). Errori parziali. */
+    if (p === '/api/health/disks' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim() || null;
+      if (serverId && !config.servers.some((s) => s.id === serverId)) {
+        return json(res, { error: 'Server non trovato' }, 404);
+      }
+      const targets = serverId ? config.servers.filter((s) => s.id === serverId) : config.servers;
+      const disks = [];
+      const errors = [];
+      await Promise.all(targets.map(async (s) => {
+        try {
+          const nodes = await api(s, 'GET', '/api2/json/nodes');
+          await Promise.all((nodes || []).map(async (n) => {
+            try {
+              const list = await api(s, 'GET', '/api2/json/nodes/' + encodeURIComponent(n.node) + '/disks/list?skipsmart=1');
+              for (const raw of (list || [])) {
+                disks.push({
+                  serverId: s.id,
+                  serverName: s.name,
+                  node: n.node,
+                  devpath: pveString(raw.devpath),
+                  type: pveString(raw.type),
+                  model: pveString(raw.model),
+                  serial: pveString(raw.serial),
+                  size: pveNumber(raw.size),
+                  vendor: pveString(raw.vendor),
+                  rpm: pveNumber(raw.rpm),
+                  used: pveString(raw.used),
+                  gpt: pveFlag(raw.gpt),
+                  /* SMART NON ancora interrogato per questa sessione/cache */
+                  smartAvailable: null,
+                });
+              }
+            } catch (e) {
+              errors.push({ serverId: s.id, serverName: s.name, node: n.node, error: e.message });
+            }
+          }));
+        } catch (e) {
+          errors.push({ serverId: s.id, serverName: s.name, error: e.message });
+        }
+      }));
+      return json(res, { ok: true, disks, errors });
+    }
+
+    /* GET /api/health/smart?serverId=&node=&disk=
+       SMART on-demand per UN disco (chiamato SOLO su espansione utente).
+       1) sintassi devpath; 2) il disco deve appartenere all'inventory del nodo
+       (verifica skipsmart, zero spin-up); 3) poi smart PVE healthonly=0.
+       Risposta normalizzata, mai la risposta PVE grezza come struttura primaria. */
+    if (p === '/api/health/smart' && req.method === 'GET') {
+      const serverId = (q.get('serverId') || '').trim();
+      const node = (q.get('node') || '').trim();
+      const disk = (q.get('disk') || '').trim();
+      if (!serverId || !node || !disk) {
+        return json(res, { error: 'Parametri mancanti: serverId, node, disk' }, 400);
+      }
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(node)) {
+        return json(res, { error: 'Nodo non valido' }, 400);
+      }
+      if (!disk.startsWith('/dev/') || disk.length <= 5 || !/^[A-Za-z0-9/_-]+$/.test(disk.slice(5))) {
+        return json(res, { error: 'Percorso disco non valido' }, 400);
+      }
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return json(res, { error: 'Server non trovato' }, 404);
+      let listed = false;
+      try {
+        const list = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(node) + '/disks/list?skipsmart=1');
+        listed = Array.isArray(list) && list.some((d) => (d.devpath || ('/dev/' + d.name)) === disk);
+      } catch (e) {
+        return json(res, { ok: false, error: 'Inventario dischi non disponibile: ' + e.message }, 502);
+      }
+      if (!listed) {
+        return json(res, { ok: false, error: 'Disco non presente sul nodo indicato' }, 404);
+      }
+      let raw;
+      try {
+        raw = await api(server, 'GET', '/api2/json/nodes/' + encodeURIComponent(node) + '/disks/smart?disk=' + encodeURIComponent(disk) + '&healthonly=0');
+      } catch (e) {
+        /* errore PVE (disco sparito, permessi, smartctl fallito): risposta
+           controllata con smartAvailable=false, MAI stack trace */
+        return json(res, {
+          ok: true,
+          smart: {
+            checkedAt: Math.floor(Date.now() / 1000),
+            health: 'UNKNOWN',
+            smartAvailable: false,
+            type: null,
+            temperature: null,
+            powerOnHours: null,
+            wearRemaining: null,
+            reallocated: null,
+            pending: null,
+            offlineUncorrectable: null,
+            rawAttributes: null,
+            rawText: null,
+          },
+        });
+      }
+      return json(res, { ok: true, smart: normalizeSmartReading(raw) });
+    }
+
     /* POST /api/health/settings
-       Soglie configurabili V2.0: storage %, età backup giorni, swap %.
-       Body parziale ammesso; {reset:true} ripristina i default. Validazione
-       warning < critical con range sensati. Mai health.guestModes. */
+       Soglie configurabili: storage %, età backup giorni, swap %, dischi
+       (temperatura + vita residua). Body parziale ammesso (anche su gruppi
+       annidati); {reset:true} ripristina i default. Mai health.guestModes. */
     if (p === '/api/health/settings' && req.method === 'POST') {
       const b = await readBody(req);
       if (b.reset === true) {
@@ -1699,19 +1935,39 @@ const server = http.createServer(async (req, res) => {
       const current = safeHealthSettings();
       const candidate = JSON.parse(JSON.stringify(current));
       const provided = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+      const patches = [];
+      const collectLeaves = (group, def, user, path) => {
+        for (const key of Object.keys(def)) {
+          const p = path ? path + '.' + key : key;
+          const u = user && typeof user === 'object' && !Array.isArray(user) ? user[key] : undefined;
+          if (u === undefined) continue;
+          if (def[key] && typeof def[key] === 'object' && !Array.isArray(def[key])) {
+            if (typeof u !== 'object' || Array.isArray(u)) {
+              return 'Impostazioni non valide: ' + p;
+            }
+            const err = collectLeaves(group, def[key], u, p);
+            if (err) return err;
+          } else {
+            const v = Number(u);
+            if (!Number.isFinite(v)) return 'Valore non valido per ' + p;
+            patches.push({ group, keys: path ? path.split('.') : [], key, value: v });
+          }
+        }
+        return null;
+      };
       for (const group of Object.keys(HEALTH_SETTING_DEFAULTS)) {
         const pg = provided[group];
         if (pg === undefined || pg === null) continue;
         if (typeof pg !== 'object' || Array.isArray(pg)) {
           return json(res, { error: 'Impostazioni non valide: ' + group }, 400);
         }
-        for (const key of Object.keys(candidate[group])) {
-          if (pg[key] !== undefined) {
-            const v = Number(pg[key]);
-            if (!Number.isFinite(v)) return json(res, { error: 'Valore non valido per ' + group + '.' + key }, 400);
-            candidate[group][key] = v;
-          }
-        }
+        const err = collectLeaves(group, HEALTH_SETTING_DEFAULTS[group], pg, '');
+        if (err) return json(res, { error: err }, 400);
+      }
+      for (const patchEntry of patches) {
+        let target = candidate[patchEntry.group];
+        for (const k of patchEntry.keys) target = target[k];
+        target[patchEntry.key] = patchEntry.value;
       }
       for (const [group, valid] of Object.entries(HEALTH_SETTING_VALIDATORS)) {
         if (!valid(candidate[group])) {

@@ -147,8 +147,12 @@ function stopFrontendWork() {
   healthTaskCache.fetching = false;
   healthTaskCache.error = false;
   for (const k of Object.keys(healthSourceCache)) {
-    healthSourceCache[k] = { at: 0, data: null, errors: [], fetching: false };
+    if (k === 'smart') healthSourceCache.smart.clear();
+    else healthSourceCache[k] = { at: 0, data: null, errors: [], fetching: false };
   }
+  smartQueue.length = 0;
+  smartBusy = false;
+  healthDiskOpen.clear();
   healthFilters.severity = 'all';
   healthFilters.server = 'all';
   healthSectionsInit = false;
@@ -2968,13 +2972,29 @@ const HEALTH_TASK_ALLOWLIST = {
 const HEALTH_TASK_WINDOW_S = 24 * 3600;
 const HEALTH_TASK_TTL_MS = 60000;
 
-/* ---------- Health V2.0 Core: soglie configurabili e costanti ---------- */
+/* ---------- Health: soglie configurabili e costanti ---------- */
 
 const HEALTH_SETTING_DEFAULTS = {
   storage: { warning: 85, critical: 90 },
   backupAge: { warningDays: 7, criticalDays: 14 },
   swap: { warning: 80, critical: 90 },
+  disk: { temp: { warning: 55, critical: 65 }, wear: { warning: 10 } },
 };
+
+/* merge ricorsivo client (gruppi annidati come disk.temp) */
+function mergeSettingClient(def, user) {
+  if (def && typeof def === 'object' && !Array.isArray(def)) {
+    const out = {};
+    for (const key of Object.keys(def)) {
+      const u = user && typeof user === 'object' && !Array.isArray(user) ? user[key] : undefined;
+      out[key] = (def[key] && typeof def[key] === 'object' && !Array.isArray(def[key]))
+        ? mergeSettingClient(def[key], u)
+        : (Number.isFinite(Number(u)) ? Number(u) : def[key]);
+    }
+    return out;
+  }
+  return def;
+}
 
 /* impostazioni effettive: config.json (health.settings) + default; un gruppo
    invalido ricade sui default. Pura, nessun side effect. */
@@ -2983,12 +3003,7 @@ function healthSettings() {
   const out = {};
   for (const [group, def] of Object.entries(HEALTH_SETTING_DEFAULTS)) {
     const user = s && typeof s === 'object' && !Array.isArray(s) ? s[group] : null;
-    const g = {};
-    for (const key of Object.keys(def)) {
-      const raw = user && typeof user === 'object' ? user[key] : null;
-      g[key] = Number.isFinite(Number(raw)) ? Number(raw) : def[key];
-    }
-    out[group] = g;
+    out[group] = mergeSettingClient(def, user);
   }
   const pctOk = (g) => g.warning >= 1 && g.warning <= 99 && g.critical >= 2 && g.critical <= 100 && g.warning < g.critical;
   if (!pctOk(out.storage)) out.storage = { ...def.storage };
@@ -2997,12 +3012,24 @@ function healthSettings() {
   if (!(b.warningDays >= 1 && b.warningDays <= 365 && b.criticalDays >= 2 && b.criticalDays <= 365 && b.warningDays < b.criticalDays)) {
     out.backupAge = { ...def.backupAge };
   }
+  /* disk: temperatura (warning < critical, range sensati) e vita residua
+     (warning > 5 fisso critico, <= 100) */
+  const d = out.disk;
+  if (!(d.temp.warning >= 20 && d.temp.warning <= 90 && d.temp.critical >= 21 && d.temp.critical <= 95 && d.temp.warning < d.temp.critical)) {
+    out.disk.temp = { ...def.disk.temp };
+  }
+  if (!(d.wear.warning > 5 && d.wear.warning <= 100)) {
+    out.disk.wear = { ...def.disk.wear };
+  }
   return out;
 }
 
 const HEALTH_ZFS_BAD = ['DEGRADED', 'FAULTED', 'UNAVAIL'];
 const HEALTH_ZFS_ERRORS_OK = 'No known data errors';
 const HEALTH_LOAD_WARN_MULT = 1.5;
+/* SMART V2.1: inventory 5 min, lettura per disco 15 min (mai auto-refetch) */
+const SMART_TTL_MS = 15 * 60 * 1000;
+const HEALTH_DISK_WEAR_CRITICAL = 5;
 
 /* ---------- Backup & Snapshot Manager (FASE 3: vista globale READ) ---------- */
 
@@ -4039,6 +4066,7 @@ function evaluateHealth(status, guestModes, taskAlerts, extras, settings) {
     sourceLabel: sourceKey || null,
     suggestionKey: suggestionKey || null,
   });
+  const withChecked = (detail, ts) => { detail.checkedAt = ts; return detail; };
   const pct = (v) => Math.round(v * 100);
 
   const push = (a) => {
@@ -4508,6 +4536,112 @@ function evaluateHealth(status, guestModes, taskAlerts, extras, settings) {
     }
   }
 
+  /* ---------- Health V2.1: dischi / SMART ----------
+     NOT CHECKED (nessuna lettura in cache) -> NESSUN alert e nessun
+     contributo "healthy": il disco è semplicemente non ancora verificato.
+     Gli alert esistono SOLO se c'è una lettura SMART in cache. */
+  const smartByKey = new Map();
+  for (const s of (ex.smart || [])) {
+    if (s && s.serverId && s.node && s.devpath) {
+      smartByKey.set(s.serverId + ':' + s.node + ':' + s.devpath, s.reading);
+    }
+  }
+  const dSet = set.disk;
+  for (const d of (ex.disks || [])) {
+    const sid = d.serverId || '';
+    const sname = d.serverName || sid;
+    const dnode = d.node || '';
+    const dev = d.devpath || '';
+    if (!dev) continue;
+    const key = sid + ':' + dnode + ':' + dev;
+    const sc = smartByKey.get(key);
+    if (!sc || !sc.checkedAt) continue; /* NOT CHECKED: nessun alert */
+    const base = 'disk:' + key;
+    const checkedAtMs = sc.checkedAt * 1000;
+    const isHealthy = sc.health === 'PASSED' || sc.health === 'OK';
+    const isFailed = sc.health === 'FAILED';
+    /* SMART FAILED: CRITICAL immediato, clear dopo 1 lettura sana */
+    if (isFailed) {
+      const entry = healthState(base + ':failed', 'critical', true, 1);
+      seen.add(base + ':failed');
+      push(healthAlert(base + ':failed', 'critical', 'disk', 'health.diskFailed', 'health.diskFailed.desc',
+        { disk: dev, model: d.model || '' }, sid, sname, dnode, null, null, null, entry.firstSeen,
+        { storage: null, source: 'smart', detail: withChecked(detailFor(sc.health, 'PASSED', '', 'health.source.smartStatus', 'health.hint.diskFailed'), checkedAtMs) }));
+    } else if (isHealthy) {
+      healthState(base + ':failed', null, false, 1);
+      seen.add(base + ':failed');
+    }
+    /* UNKNOWN / SMART_DISABLED / lettura non riuscita: INFO immediato,
+       clear dopo una lettura sana successiva */
+    if (sc.health === 'UNKNOWN' || sc.health === 'SMART_DISABLED' || sc.smartAvailable === false) {
+      const entry = healthState(base + ':unknown', 'info', true, 1);
+      seen.add(base + ':unknown');
+      const isDisabled = sc.health === 'SMART_DISABLED';
+      push(healthAlert(base + ':unknown', 'info', 'disk', isDisabled ? 'health.diskSmartDisabled' : 'health.diskSmartUnknown',
+        isDisabled ? 'health.diskSmartDisabled.desc' : 'health.diskSmartUnknown.desc',
+        { disk: dev }, sid, sname, dnode, null, null, null, entry.firstSeen,
+        { source: 'smart', detail: withChecked(detailFor(sc.health, 'PASSED', '', 'health.source.smartStatus', 'health.hint.diskUnknown'), checkedAtMs) }));
+    } else if (isHealthy || isFailed) {
+      healthState(base + ':unknown', null, false, 1);
+      seen.add(base + ':unknown');
+    }
+    /* settori: WARNING immediato quando > 0, clear alla prima lettura a 0 */
+    const sectors = [
+      ['pending', 'health.diskPending', 'health.diskPending.desc', 'health.hint.diskSectors'],
+      ['reallocated', 'health.diskReallocated', 'health.diskReallocated.desc', 'health.hint.diskSectors'],
+      ['offlineUncorrectable', 'health.diskUncorrectable', 'health.diskUncorrectable.desc', 'health.hint.diskSectors'],
+    ];
+    for (const [field, titleKey, descKey, hintKey] of sectors) {
+      const v = sc[field];
+      const id = base + ':' + field;
+      seen.add(id);
+      if (typeof v === 'number' && v > 0) {
+        const entry = healthState(id, 'warning', true, 1);
+        push(healthAlert(id, 'warning', 'disk', titleKey, descKey,
+          { disk: dev, n: v }, sid, sname, dnode, null, null, null, entry.firstSeen,
+          { source: 'smart', detail: withChecked(detailFor(v, '0', '', 'health.source.smartStatus', hintKey), checkedAtMs) }));
+      } else if (typeof v === 'number') {
+        healthState(id, null, false, 1);
+      } else {
+        healthSamples.delete(id); /* metrica non disponibile: niente alert */
+      }
+    }
+    /* vita residua stimata: immediata (dato lento), critica FISSA a 5 */
+    if (typeof sc.wearRemaining === 'number' && sc.wearRemaining >= 0 && sc.wearRemaining <= 100) {
+      const id = base + ':wear';
+      seen.add(id);
+      const sev = sc.wearRemaining <= HEALTH_DISK_WEAR_CRITICAL ? 'critical'
+        : (sc.wearRemaining <= dSet.wear.warning ? 'warning' : null);
+      const entry = healthImmediate(id, sev);
+      if (entry.severity) {
+        push(healthAlert(id, entry.severity, 'disk', 'health.diskWear', 'health.diskWear.desc',
+          { disk: dev, pct: Math.round(sc.wearRemaining) }, sid, sname, dnode, null, null, null, entry.firstSeen,
+          { source: 'smart', detail: withChecked(detailFor(Math.round(sc.wearRemaining) + '%', (entry.severity === 'critical' ? HEALTH_DISK_WEAR_CRITICAL : dSet.wear.warning) + '%', '', 'health.source.smartStatus', 'health.hint.diskWear'), checkedAtMs) }));
+      }
+    } else {
+      const id = base + ':wear';
+      seen.add(id);
+      healthSamples.delete(id); /* N/A: niente alert */
+    }
+    /* temperatura: 2 campioni con downgrade a scalino (soglie configurabili) */
+    if (typeof sc.temperature === 'number' && Number.isFinite(sc.temperature)) {
+      const id = base + ':temp';
+      const th = { warning: dSet.temp.warning, critical: dSet.temp.critical };
+      const entry = healthHysteresis(id, sc.temperature, th);
+      seen.add(id);
+      if (entry.severity) {
+        const thr = th[entry.severity === 'critical' ? 'critical' : 'warning'];
+        push(healthAlert(id, entry.severity, 'disk', 'health.diskTemp', 'health.diskTemp.desc',
+          { disk: dev, temp: Math.round(sc.temperature) }, sid, sname, dnode, null, null, null, entry.firstSeen,
+          { source: 'smart', detail: withChecked(detailFor(Math.round(sc.temperature) + ' °C', thr + ' °C', '', 'health.source.smartStatus', 'health.hint.diskTemp'), checkedAtMs) }));
+      }
+    } else {
+      const id = base + ':temp';
+      seen.add(id);
+      healthSamples.delete(id);
+    }
+  }
+
   /* cleanup: rimuove lo stato dei check che non esistono più nel payload
      corrente o che sono diventati ignore/non applicabili (niente memory leak). */
   for (const id of Array.from(healthSamples.keys())) {
@@ -4649,6 +4783,9 @@ function healthAlertHtml(a) {
     if (d.suggestionKey) {
       rows.push('<div class="health-why-row"><span class="health-why-label">' + t('health.detail.suggestion') + '</span><span>' + esc(t(d.suggestionKey)) + '</span></div>');
     }
+    if (d.checkedAt) {
+      rows.push('<div class="health-why-row"><span class="health-why-label">' + t('health.detail.lastChecked') + '</span><span>' + esc(healthRelTime(d.checkedAt)) + '</span></div>');
+    }
     if (rows.length) {
       why = '<details class="health-alert-why"><summary>' + t('health.why') + '</summary>' +
         '<div class="health-why-grid">' + rows.join('') + '</div></details>';
@@ -4762,6 +4899,128 @@ function healthZfsHtml(pools, errors) {
       (scan ? '<div class="health-row-scan">' + esc(scan) + '</div>' : '') +
     '</div>';
   }).join('') + healthPartialNote(errors);
+}
+
+/* ---------- Health V2.1: sezione Dischi / SMART ---------- */
+
+const healthDiskOpen = new Set();
+
+function healthDiskSmartStatus(smart, entry, disk) {
+  if (entry && entry.fetching) {
+    return '<span class="health-row-state dim">' + t('health.disk.checking') + '</span>';
+  }
+  if (!smart || !smart.checkedAt) {
+    return '<span class="health-row-state dim">' + t('health.disk.notChecked') + '</span>';
+  }
+  if (smart.smartAvailable === false) {
+    return '<span class="health-row-state dim">' + t('health.disk.unavailable') + '</span>';
+  }
+  const cls = smart.health === 'FAILED' ? 'bad' : (smart.health === 'PASSED' || smart.health === 'OK') ? 'ok' : 'dim';
+  return '<span class="health-row-state ' + cls + '">SMART ' + esc(smart.health) + '</span>';
+}
+
+function healthDiskCheckedAgo(entry) {
+  if (!entry || !entry.at) return '';
+  const mins = Math.floor((Date.now() - entry.at) / 60000);
+  const stale = Date.now() - entry.at >= SMART_TTL_MS;
+  return '<span class="health-row-meta">' + t('health.disk.checkedAgo', { n: mins }) +
+    (stale ? ' · <span class="health-disk-stale">' + t('health.disk.stale') + '</span>' : '') + '</span>';
+}
+
+function healthDiskHtml(disks, smartCache, errors) {
+  const servers = new Map();
+  for (const d of disks) {
+    if (!servers.has(d.serverId)) servers.set(d.serverId, { name: d.serverName, nodes: new Map() });
+    const srv = servers.get(d.serverId);
+    if (!srv.nodes.has(d.node)) srv.nodes.set(d.node, []);
+    srv.nodes.get(d.node).push(d);
+  }
+  let html = '';
+  for (const [sid, srv] of servers) {
+    for (const [node, nodeDisks] of srv.nodes) {
+      html += '<div class="health-server glass"><div class="health-server-head">' +
+        '<span class="health-server-name">' + esc(srv.name) + '</span>' +
+        '<span class="health-row-meta">' + esc(node) + '</span></div>';
+      for (const d of nodeDisks) {
+        const key = sid + ':' + node + ':' + d.devpath;
+        const entry = smartCache.get(key);
+        const smart = entry ? entry.data : null;
+        const open = healthDiskOpen.has(key);
+        const badges = [];
+        if (d.type) badges.push('<span class="health-badge">' + esc(String(d.type).toUpperCase()) + '</span>');
+        const extras = [];
+        if (smart && smart.checkedAt) {
+          if (typeof smart.temperature === 'number') extras.push(esc(Math.round(smart.temperature) + ' °C'));
+          if (typeof smart.wearRemaining === 'number') extras.push(t('health.disk.life') + ': ' + Math.round(smart.wearRemaining) + '%');
+        }
+        html += '<details class="health-disk"' + (open ? ' open' : '') + ' data-disk-key="' + esc(key) + '">' +
+          '<summary class="health-disk-summary">' +
+            '<span class="health-row-name">' + esc(d.devpath || '?') + '</span>' +
+            '<span class="health-row-meta">' + esc(d.model || '') + '</span>' +
+            badges.join('') +
+            healthDiskSmartStatus(smart, entry, d) +
+            (extras.length ? '<span class="health-disk-extras">' + extras.join(' · ') + '</span>' : '') +
+          '</summary>' +
+          '<div class="health-disk-body">' +
+            healthDiskCheckedAgo(entry) +
+            healthDiskDetailHtml(d, smart, entry) +
+          '</div>' +
+        '</details>';
+      }
+      html += '</div>';
+    }
+  }
+  return html + healthPartialNote(errors);
+}
+
+function healthDiskDetailHtml(d, smart, entry) {
+  const rows = [
+    [t('health.disk.detail.device'), d.devpath],
+    [t('health.disk.detail.model'), d.model],
+    [t('health.disk.detail.serial'), d.serial],
+    [t('health.disk.detail.vendor'), d.vendor],
+    [t('health.disk.detail.type'), d.type ? String(d.type).toUpperCase() : null],
+    [t('health.disk.detail.capacity'), typeof d.size === 'number' ? fmtBytes(d.size) : null],
+  ];
+  if (d.type === 'hdd' && typeof d.rpm === 'number' && d.rpm > 0) rows.push([t('health.disk.detail.rpm'), d.rpm + ' rpm']);
+  if (smart && smart.checkedAt) {
+    rows.push([t('health.disk.detail.smartHealth'), 'SMART ' + smart.health]);
+    if (typeof smart.temperature === 'number') rows.push([t('health.disk.detail.temperature'), Math.round(smart.temperature) + ' °C']);
+    if (typeof smart.powerOnHours === 'number') rows.push([t('health.disk.detail.powerOnHours'), smart.powerOnHours + ' h']);
+    if (typeof smart.wearRemaining === 'number') {
+      rows.push([t('health.disk.detail.life'), Math.round(smart.wearRemaining) + '%']);
+      rows.push([null, '<span class="health-disk-wear-note">' + t('health.disk.wearNote') + '</span>']);
+    }
+    if (typeof smart.reallocated === 'number') rows.push([t('health.disk.detail.reallocated'), smart.reallocated]);
+    if (typeof smart.pending === 'number') rows.push([t('health.disk.detail.pending'), smart.pending]);
+    if (typeof smart.offlineUncorrectable === 'number') rows.push([t('health.disk.detail.uncorrectable'), smart.offlineUncorrectable]);
+  } else if (entry && entry.fetching) {
+    rows.push([null, t('health.disk.checking')]);
+  } else if (entry && entry.error) {
+    rows.push([null, t('health.disk.unavailable')]);
+  } else {
+    rows.push([null, t('health.disk.notChecked')]);
+  }
+  let html = rows.filter((r) => r[0] !== null || r[1] !== null)
+    .map((r) => '<div class="health-why-row">' +
+      (r[0] ? '<span class="health-why-label">' + esc(r[0]) + '</span>' : '<span class="health-why-label"></span>') +
+      '<span>' + (r[1] === null || r[1] === undefined ? '—' : r[1]) + '</span></div>').join('');
+  /* Mostra SMART completo: attributi ATA (tabella) o testo NVMe/SAS, escaped */
+  if (smart && (smart.rawAttributes || smart.rawText)) {
+    html += '<details class="health-disk-raw"><summary>' + t('health.disk.showAll') + '</summary>';
+    if (smart.rawAttributes) {
+      html += '<div class="health-disk-raw-table-wrap"><table class="health-disk-raw-table">' +
+        '<thead><tr><th>ID</th><th>' + t('health.disk.attr.name') + '</th><th>' + t('health.disk.attr.value') + '</th>' +
+        '<th>' + t('health.disk.attr.worst') + '</th><th>' + t('health.disk.attr.threshold') + '</th>' +
+        '<th>' + t('health.disk.attr.raw') + '</th></tr></thead><tbody>' +
+        smart.rawAttributes.map((a) => '<tr><td>' + esc(String(a.id || '').trim()) + '</td><td>' + esc(a.name) + '</td><td>' + esc(String(a.value)) + '</td><td>' + esc(String(a.worst)) + '</td><td>' + esc(String(a.threshold)) + '</td><td>' + esc(String(a.raw)) + '</td></tr>').join('') +
+        '</tbody></table></div>';
+    } else if (smart.rawText) {
+      html += '<pre class="health-disk-raw-text">' + esc(smart.rawText) + '</pre>';
+    }
+    html += '</details>';
+  }
+  return html;
 }
 
 function healthBackupRows() {
@@ -4880,6 +5139,7 @@ function renderHealth() {
     $('healthFilters').hidden = true;
     $('healthStorageSection').hidden = true;
     $('healthZfsSection').hidden = true;
+    $('healthDiskSection').hidden = true;
     $('healthBackupSection').hidden = true;
     $('healthClusterSection').hidden = true;
     $('healthEmpty').hidden = true;
@@ -4956,6 +5216,16 @@ function renderHealth() {
   $('healthZfsCount').textContent = String(pools.length);
   $('healthZfsSection').hidden = pools.length === 0;
 
+  /* dischi / SMART (V2.1): inventory senza smartctl; letture solo on-demand */
+  const disks = (healthSourceCache.disks.data || []).filter((d) => healthServerOk(d.serverId));
+  for (const d of disks) {
+    const dkey = d.serverId + ':' + d.node + ':' + d.devpath;
+    if (healthDiskOpen.has(dkey)) requestSmart(d.serverId, d.node, d.devpath);
+  }
+  $('healthDiskList').innerHTML = healthDiskHtml(disks, healthSourceCache.smart, healthSourceCache.disks.errors);
+  $('healthDiskCount').textContent = String(disks.length);
+  $('healthDiskSection').hidden = disks.length === 0;
+
   /* backup */
   const bRows = healthBackupRows();
   $('healthBackupList').innerHTML = healthBackupHtml(bRows, healthSourceCache.backups.errors);
@@ -4979,6 +5249,7 @@ function renderHealth() {
       healthSectionsInit = true;
       $('healthStorageSection').open = storages.length > 0;
       $('healthZfsSection').open = h.alerts.some((a) => a.category === 'zfs' && a.severity !== 'info');
+      $('healthDiskSection').open = h.alerts.some((a) => a.category === 'disk' && a.severity !== 'info');
       $('healthBackupSection').open = h.alerts.some((a) => a.category === 'backup' && a.severity !== 'info');
       $('healthClusterSection').open = h.alerts.some((a) => a.category === 'cluster' || a.category === 'ha');
     }
@@ -5041,13 +5312,17 @@ function refreshHealthFromExtras() {
    NESSUN timer globale: il re-check avviene nel normale ciclo di renderHealth
    (richiamato a ogni refresh dello status quando la vista è aperta). */
 
-const HEALTH_SOURCE_TTL = { storage: 60000, cluster: 60000, zfs: 120000, backups: 60000 };
+const HEALTH_SOURCE_TTL = { storage: 60000, cluster: 60000, zfs: 120000, backups: 60000, disks: 300000 };
 
 const healthSourceCache = {
   storage: { at: 0, data: null, errors: [], fetching: false },
   cluster: { at: 0, data: null, errors: [], fetching: false },
   zfs: { at: 0, data: null, errors: [], fetching: false },
   backups: { at: 0, data: null, errors: [], fetching: false },
+  disks: { at: 0, data: null, errors: [], fetching: false },
+  /* letture SMART per disco: chiave "serverId:node:devpath".
+     MAI auto-refetch allo scadere del TTL: solo nuova interazione utente. */
+  smart: new Map(),
 };
 
 function healthExtrasPayload() {
@@ -5056,6 +5331,16 @@ function healthExtrasPayload() {
     pools: healthSourceCache.zfs.data || [],
     clusters: healthSourceCache.cluster.data || [],
     backups: healthSourceCache.backups.data || [],
+    disks: healthSourceCache.disks.data || [],
+    smart: Array.from(healthSourceCache.smart.entries()).map(([key, entry]) => {
+      const parts = key.split(':');
+      return {
+        serverId: parts[0],
+        node: parts[1],
+        devpath: parts.slice(2).join(':'),
+        reading: entry.data,
+      };
+    }),
   };
 }
 
@@ -5070,10 +5355,81 @@ async function maybeFetchHealthSources() {
       if (key === 'storage') tasks.push(fetchHealthStorage());
       else if (key === 'cluster') tasks.push(fetchHealthCluster());
       else if (key === 'zfs') tasks.push(fetchHealthZfs());
-      else tasks.push(fetchHealthBackups());
+      else if (key === 'backups') tasks.push(fetchHealthBackups());
+      else tasks.push(fetchHealthDisks());
     }
   }
   if (tasks.length) await Promise.all(tasks);
+}
+
+async function fetchHealthDisks() {
+  const c = healthSourceCache.disks;
+  if (c.fetching) return;
+  c.fetching = true;
+  try {
+    const d = await backupFetch('/api/health/disks');
+    c.data = d.disks || [];
+    c.errors = d.errors || [];
+    c.at = Date.now();
+  } catch (e) {
+    c.errors = [{ error: e.message }];
+    c.data = c.data || [];
+    c.at = Date.now();
+  } finally {
+    c.fetching = false;
+    refreshHealthFromExtras();
+  }
+}
+
+/* ---------- SMART on-demand: coda FIFO, concorrenza massima 1 ---------- */
+
+const smartQueue = [];
+let smartBusy = false;
+
+function smartEntry(key) {
+  let entry = healthSourceCache.smart.get(key);
+  if (!entry) {
+    entry = { at: 0, data: null, error: null, fetching: false };
+    healthSourceCache.smart.set(key, entry);
+  }
+  return entry;
+}
+
+function pumpSmartQueue() {
+  if (smartBusy || smartQueue.length === 0) return;
+  const job = smartQueue.shift();
+  smartBusy = true;
+  const entry = smartEntry(job.key);
+  entry.fetching = true;
+  (async () => {
+    try {
+      const d = await backupFetch('/api/health/smart?serverId=' + encodeURIComponent(job.serverId) +
+        '&node=' + encodeURIComponent(job.node) + '&disk=' + encodeURIComponent(job.devpath));
+      entry.data = d.smart || null;
+      entry.error = entry.data && entry.data.smartAvailable === false ? 'SMART non disponibile' : null;
+      entry.at = Date.now();
+    } catch (e) {
+      entry.error = e.message;
+      entry.at = Date.now();
+    } finally {
+      entry.fetching = false;
+      smartBusy = false;
+      refreshHealthFromExtras();
+      pumpSmartQueue();
+    }
+  })();
+}
+
+/* richiesta SMART per un disco: cache fresca -> nessuna chiamata; dato stale
+   -> nuova lettura SOLO su interazione utente (mai automatica). */
+function requestSmart(serverId, node, devpath) {
+  const key = serverId + ':' + node + ':' + devpath;
+  const entry = smartEntry(key);
+  const now = Date.now();
+  if (entry.data && now - entry.at < SMART_TTL_MS) return; /* fresca */
+  if (entry.fetching) return; /* già in coda/in volo */
+  smartQueue.push({ key, serverId, node, devpath });
+  pumpSmartQueue();
 }
 
 async function fetchHealthStorage() {
@@ -5262,6 +5618,48 @@ $('healthServerFilter').addEventListener('change', () => {
   if (currentView === 'health') renderHealth();
 });
 
+/* espansione disco: fetch SMART on-demand (coda, concorrenza max 1).
+   Il toggle NATIVO è disabilitato con preventDefault: lo stato aperto/chiuso
+   è interamente controllato dal render (evita le raffiche di eventi toggle
+   generate dalla sostituzione del DOM a ogni refresh). */
+$('healthDiskList').addEventListener('click', (e) => {
+  const det = e.target && e.target.closest ? e.target.closest('details.health-disk') : null;
+  const sum = e.target && e.target.closest ? e.target.closest('details.health-disk > summary.health-disk-summary') : null;
+  if (!det || !sum) return;
+  e.preventDefault();
+  const key = det.dataset.diskKey;
+  if (!key) return;
+  if (healthDiskOpen.has(key)) {
+    healthDiskOpen.delete(key);
+  } else {
+    healthDiskOpen.add(key);
+    const parts = key.split(':');
+    requestSmart(parts[0], parts[1], parts.slice(2).join(':'));
+  }
+  if (currentView === 'health') renderHealth();
+}, true);
+
+/* accessibilità tastiera: Enter/Spazio sul summary (l'attivazione nativa
+   del summary non emette click in tutti i browser) */
+$('healthDiskList').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const sum = e.target && e.target.closest ? e.target.closest('details.health-disk > summary.health-disk-summary') : null;
+  if (!sum) return;
+  const det = sum.parentElement;
+  if (!det) return;
+  e.preventDefault();
+  const key = det.dataset.diskKey;
+  if (!key) return;
+  if (healthDiskOpen.has(key)) {
+    healthDiskOpen.delete(key);
+  } else {
+    healthDiskOpen.add(key);
+    const parts = key.split(':');
+    requestSmart(parts[0], parts[1], parts.slice(2).join(':'));
+  }
+  if (currentView === 'health') renderHealth();
+}, true);
+
 function healthSettingsInputs() {
   return {
     storageWarning: $('hsStorageWarning'),
@@ -5270,6 +5668,9 @@ function healthSettingsInputs() {
     backupCritical: $('hsBackupCritical'),
     swapWarning: $('hsSwapWarning'),
     swapCritical: $('hsSwapCritical'),
+    diskTempWarning: $('hsDiskTempWarning'),
+    diskTempCritical: $('hsDiskTempCritical'),
+    diskWearWarning: $('hsDiskWearWarning'),
   };
 }
 
@@ -5283,6 +5684,9 @@ function updateHealthSettingsUI() {
   inp.backupCritical.value = (s && s.backupAge && Number.isFinite(Number(s.backupAge.criticalDays))) ? s.backupAge.criticalDays : d.backupAge.criticalDays;
   inp.swapWarning.value = (s && s.swap && Number.isFinite(Number(s.swap.warning))) ? s.swap.warning : d.swap.warning;
   inp.swapCritical.value = (s && s.swap && Number.isFinite(Number(s.swap.critical))) ? s.swap.critical : d.swap.critical;
+  inp.diskTempWarning.value = (s && s.disk && s.disk.temp && Number.isFinite(Number(s.disk.temp.warning))) ? s.disk.temp.warning : d.disk.temp.warning;
+  inp.diskTempCritical.value = (s && s.disk && s.disk.temp && Number.isFinite(Number(s.disk.temp.critical))) ? s.disk.temp.critical : d.disk.temp.critical;
+  inp.diskWearWarning.value = (s && s.disk && s.disk.wear && Number.isFinite(Number(s.disk.wear.warning))) ? s.disk.wear.warning : d.disk.wear.warning;
 }
 
 $('btnHealthSave').onclick = async () => {
@@ -5291,6 +5695,10 @@ $('btnHealthSave').onclick = async () => {
     storage: { warning: Number(inp.storageWarning.value), critical: Number(inp.storageCritical.value) },
     backupAge: { warningDays: Number(inp.backupWarning.value), criticalDays: Number(inp.backupCritical.value) },
     swap: { warning: Number(inp.swapWarning.value), critical: Number(inp.swapCritical.value) },
+    disk: {
+      temp: { warning: Number(inp.diskTempWarning.value), critical: Number(inp.diskTempCritical.value) },
+      wear: { warning: Number(inp.diskWearWarning.value) },
+    },
   };
   const hsError = $('hsError');
   hsError.hidden = true;

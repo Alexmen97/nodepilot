@@ -2781,6 +2781,78 @@ details.health-sub[open] > .health-sub-summary .health-sub-caret { transform: ro
   padding: 4px 2px 0;
 }
 
+/* ---------- Health V2.1: Dischi / SMART ---------- */
+
+.health-disk {
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+}
+
+.health-disk-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.health-disk-summary::-webkit-details-marker { display: none; }
+.health-disk-summary::marker { content: ''; }
+.health-disk-summary .health-row-state { margin-left: auto; }
+.health-disk-extras { font-size: 11.5px; color: var(--text-dim); }
+.health-disk-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.health-disk-stale { color: var(--yellow); }
+.health-disk-wear-note { font-size: 11px; color: var(--text-dim); opacity: 0.9; }
+
+.health-disk-raw { margin-top: 4px; }
+.health-disk-raw summary {
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
+  list-style: none;
+}
+.health-disk-raw summary::-webkit-details-marker { display: none; }
+.health-disk-raw summary::after { content: ' ▾'; font-size: 10px; opacity: 0.8; }
+.health-disk-raw[open] summary::after { content: ' ▴'; }
+
+.health-disk-raw-table-wrap { margin-top: 6px; overflow-x: auto; }
+.health-disk-raw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.health-disk-raw-table th, .health-disk-raw-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--glass-border);
+  white-space: nowrap;
+}
+.health-disk-raw-table th { color: var(--text-dim); font-weight: 650; }
+.health-disk-raw-text {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--glass-border);
+  border-radius: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ---------- Health V2: soglie in Impostazioni ---------- */
 
 .health-settings-grid {
