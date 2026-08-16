@@ -2850,6 +2850,23 @@ $('authRetry').onclick = () => {
 
 bootApp();
 
+/* badge versione: metadata decorativo da /api/version, UNA sola fetch al boot.
+   Errore -> badge resta nascosto, nessun toast/errore UI, nessun salvataggio. */
+(async () => {
+  try {
+    const res = await fetch('/api/version');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && typeof data.version === 'string' && data.version) {
+      const badge = $('versionBadge');
+      if (badge) {
+        badge.textContent = 'v' + data.version;
+        badge.hidden = false;
+      }
+    }
+  } catch (_) { /* degradazione silenziosa */ }
+})();
+
 /* tema: segmented control */
 document.querySelectorAll('#themeSegmented [data-theme]').forEach((btn) => {
   btn.onclick = async () => {

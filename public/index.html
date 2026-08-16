@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=17">
+  <link rel="stylesheet" href="style.css?v=18">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -64,6 +64,7 @@
         <h1>Node<span>Pilot</span></h1>
         <p id="subtitle">Connessione in corso…</p>
       </div>
+      <span class="version-badge" id="versionBadge" hidden></span>
     </div>
     <div class="topbar-right">
       <nav class="main-nav" id="mainNav">
@@ -536,6 +537,11 @@
       </div>
     </section>
   </main>
+
+  <footer class="app-footer">
+    <span>Developed by</span>
+    <a href="https://github.com/Alexmen97" target="_blank" rel="noopener noreferrer">Alexmen97</a>
+  </footer>
 
   <div id="toasts" class="toasts"></div>
 
@@ -1022,7 +1028,7 @@
   <script src="i18n.js?v=19"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
-  <script src="app.js?v=26"></script>
+  <script src="app.js?v=27"></script>
   <script src="vnc-console.js?v=1"></script>
 </body>
 </html>

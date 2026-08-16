@@ -62,6 +62,21 @@ function saveState() {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+/* Metadati applicazione (badge versione): letti UNA volta da package.json.
+   Fallback sicuro: se il file non è leggibile/parsabile il server continua
+   ad avviarsi e il frontend nasconde il badge. MAI altri metadata. */
+const APP_META = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    return {
+      name: 'NodePilot',
+      version: typeof pkg.version === 'string' ? pkg.version : '',
+    };
+  } catch (_) {
+    return { name: 'NodePilot', version: '' };
+  }
+})();
+
 /* ---------------- authentication core (Fase 1: senza enforcement, arriva in F3) ---------------- */
 
 const AUTH_PATH = path.join(__dirname, 'auth.json');
@@ -1038,7 +1053,7 @@ const server = http.createServer(async (req, res) => {
   /* Fase 3: enforcement autenticazione — tutti gli endpoint /api richiedono una
      sessione valida, tranne login/session/logout. Gli statici restano pubblici
      (la shell di login non contiene dati). */
-  if (p.startsWith('/api/') && p !== '/api/auth/login' && p !== '/api/auth/session' && p !== '/api/auth/logout') {
+  if (p.startsWith('/api/') && p !== '/api/auth/login' && p !== '/api/auth/session' && p !== '/api/auth/logout' && p !== '/api/version') {
     if (!requireAuth(req)) {
       return json(res, { ok: false, authenticated: false, error: 'Non autenticato' }, 401);
     }
@@ -1108,6 +1123,12 @@ const server = http.createServer(async (req, res) => {
       const s = getSession(req);
       if (!s) return json(res, { ok: true, authenticated: false });
       return json(res, { ok: true, authenticated: true, user: { username: s.username } });
+    }
+
+    /* GET /api/version — metadata pubblici minimi (badge versione).
+       SOLO name e version; nessun altro dato di runtime. */
+    if (p === '/api/version' && req.method === 'GET') {
+      return json(res, APP_META);
     }
 
     /* cambio password: NON nella allowlist pubblica, quindi eredita

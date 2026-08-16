@@ -276,6 +276,8 @@ body {
   color: var(--text);
   min-height: 100vh;
   overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---------- sfondo animato ---------- */
@@ -364,7 +366,7 @@ body {
 
 .brand-text p { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
 
-.topbar-right { display: flex; align-items: center; gap: 14px; }
+.topbar-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* safe area iOS: header e drawer rispettano Dynamic Island e Home Indicator */
 .topbar {
@@ -516,6 +518,7 @@ body {
 
 .main-nav {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   padding: 4px;
@@ -1137,7 +1140,48 @@ body {
 
 /* ---------- layout ---------- */
 
-main { max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32px 60px; }
+main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32px 60px; }
+
+/* ---------- badge versione e footer ---------- */
+
+.version-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-dim);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.app-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.app-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.app-footer a:hover { text-decoration: underline; }
+.app-footer a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (max-width: 760px) {
+  .brand { gap: 10px; }
+  .version-badge { padding: 1px 6px; font-size: 10px; }
+}
 
 .glass {
   background: var(--glass);
