@@ -9,7 +9,10 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [x] Guest Detail
 - [x] Log Proxmox
 - [x] LXC Shell
-- [x] Health Center V1
+- [x] Health Center V2 (nodi, Storage, ZFS, Backup, Cluster/HA)
+- [x] Health Center V2.1 — Dischi / SMART (read-only, on-demand)
+- [x] QEMU VNC Console (noVNC)
+- [x] Cambio password dashboard
 - [x] Backup & Snapshot Manager V1
 - [x] Authentication / Login
 - [x] Tour V2
@@ -28,19 +31,10 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [ ] screenshot del README
 - [x] CI base su GitHub Actions
 
-### Health Center V2.0 Core
+### Release v1.2.0 — Health & Console Update
 
-- [ ] Health Center V2.0 Core — Node Health (swap/load), Storage, ZFS,
-  Backup e Cluster/HA, alert model V2, anti-flap V2, soglie configurabili
-  minime e UI a sezioni con filtri. Implementazione locale completata,
-  release in attesa di review.
-
-### Health Center V2.1 — Disk / SMART
-
-- [ ] Disk inventory senza smartctl (skipsmart=1) e SMART detail on-demand
-  per singolo disco (concorrenza 1, TTL 5/15 min senza auto-refetch),
-  alert FAILED/settori/vita residua/temperatura, stato "Non controllato"
-  distinto da UNKNOWN. Implementazione locale in corso.
+- [x] Health Center V2.0 Core e V2.1 (Disk/SMART) rilasciati
+- [x] QEMU VNC Console e cambio password dashboard inclusi
 
 ### Stabilization & Hardening V1.1
 

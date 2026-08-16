@@ -6,49 +6,42 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
-## Unreleased — Health Center V2.1 (Disk / SMART)
+## 1.2.0 - 2026-08-16
 
-Status: **In sviluppo** — implementazione completata, non ancora rilasciata
+Status: **Stable**
 
-- sezione Dischi / SMART in Monitoraggio: inventory dischi via
-  `disks/list?skipsmart=1` (mai smartctl all'apertura, zero risvegli HDD);
-- SMART detail on-demand per singolo disco (`GET /api/health/smart`) con
-  validazione sull'inventory del nodo e risposta normalizzata
-  (health/type/temperatura/ore di accensione/vita residua/settori);
-- stato "Non controllato" distinto da UNKNOWN/SMART_DISABLED: nessun alert
-  finché il disco non è stato realmente letto;
-- alert: SMART FAILED → CRITICAL immediato; pending/reallocated/uncorrectable
-  > 0 → WARNING; vita residua ≤ 10% WARNING e ≤ 5% CRITICAL fisso;
-  temperatura con isteresi a 2 campioni (default 55/65 °C);
-- cache frontend: inventory TTL 5 min, SMART per disco TTL 15 min senza
-  auto-refetch (indicatore dato non recente), coda FIFO con concorrenza 1;
-- parsing ATA per nome+ID e NVMe/SAS conservativo; "Mostra SMART completo"
-  collassabile con attributi raw o testo;
-- 3 nuove soglie configurabili (temp warning/critical, vita residua warning)
-  con ripristino default;
-- PWA: cache `nodepilot-v6` (`app.js?v=26`, `style.css?v=17`, `i18n.js?v=19`).
+### Aggiunte
 
-## Unreleased — Health Center V2.0 Core
+- QEMU VNC Console con noVNC integrato: preparazione one-shot autenticata,
+  ticket Proxmox mai esposti nelle URL del browser;
+- cambio password della dashboard da Impostazioni (invalida tutte le sessioni);
+- Health Center V2: monitoraggio nodi (swap/load), Storage, ZFS, Backup e
+  Cluster/HA con alert model V2, dettaglio "Perché lo vedo?", filtri
+  severità/server e sezioni collassabili;
+- Health Center V2.1 — Dischi / SMART: inventory dischi senza smartctl
+  (`disks/list?skipsmart=1`), lettura SMART on-demand per singolo disco
+  (concorrenza 1, TTL 5/15 min senza auto-refetch), stato "Non controllato"
+  distinto da UNKNOWN/SMART_DISABLED, "Mostra SMART completo";
+- soglie Health configurabili (storage, età backup, swap, temperatura dischi,
+  vita residua) con ripristino default;
+- template issue/PR su GitHub, guida per contributori, demo showcase e
+  screenshot nella documentazione.
 
-Status: **In sviluppo** — implementazione completata, non ancora rilasciata
+### Modificate
 
-- Node Health V2: swap e load average dal pass-through dei dati già raccolti
-  (zero nuove chiamate PVE al normale `/api/status`);
-- fix RAM guest-agent per PVE 9.2 (`freemem` con compatibilità `free_mem`) e
-  pass-through di `ha`, `qmpstatus`, `lock`, `agent`;
-- Storage Health (usage, offline, disabled, dedup shared) e ZFS Health
-  (DEGRADED/FAULTED/UNAVAIL, errori, capacità, scrub best-effort);
-- Backup Health (età ultimo archivio 7/14 giorni, guest senza backup senza
-  falsi CRITICAL) e Cluster/HA (quorum, servizi HA, rilevamento standalone);
-- alert model V2 con dettaglio "Perché lo vedo?" (valore, soglia, fonte,
-  suggerimento non distruttivo);
-- anti-flap V2: isteresi quantitativa invariata, clear ritardato per gli
-  stati (offline 2 refresh, ZFS 1 lettura, HA 2 letture);
-- soglie configurabili minime (storage %, età backup giorni, swap %) con
-  ripristino default, salvate in `config.json → health.settings`;
-- UI Monitoraggio V2: filtri severità/server solo client-side, sezioni
-  collassabili, sezioni Storage/ZFS/Backup/Cluster;
-- PWA: cache `nodepilot-v5` (`app.js?v=25`, `style.css?v=16`, `i18n.js?v=18`).
+- anti-flap Health migliorato: clear ritardato per stati/eventi e isteresi
+  quantitativa conservata;
+- rilevamento memoria QEMU corretto per Proxmox VE 9.2 (`freemem`);
+- gestione cache/versioni PWA migliorata (cache `nodepilot-v6`);
+- spaziatura della sezione Backup & Snapshot corretta;
+- README e documentazione aggiornati (video demo, screenshot, contribuzione).
+
+### Sicurezza
+
+- preparazione VNC autenticata one-shot: i ticket restano lato server;
+- il cambio password invalida tutte le sessioni attive;
+- monitoraggio SMART rigorosamente read-only e on-demand: nessuno smartctl
+  automatico, nessun risveglio HDD, nessuna credenziale aggiuntiva.
 
 ## v1.1.1 — Open Source Preparation
 
