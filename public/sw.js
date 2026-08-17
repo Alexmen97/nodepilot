@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE = 'nodepilot-v8';
+const CACHE = 'nodepilot-v9';
 const STATIC = [
   '/',
   '/index.html',

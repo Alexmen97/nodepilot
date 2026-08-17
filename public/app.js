@@ -2852,7 +2852,7 @@ bootApp();
 
 /* badge versione: metadata decorativo da /api/version, UNA sola fetch al boot.
    Errore -> badge resta nascosto, nessun toast/errore UI, nessun salvataggio. */
-(async () => {
+async function fetchAppVersion() {
   try {
     const res = await fetch('/api/version');
     if (!res.ok) return;
@@ -2864,8 +2864,12 @@ bootApp();
         badge.hidden = false;
       }
     }
-  } catch (_) { /* degradazione silenziosa */ }
-})();
+  } catch (_) {
+    /* degradazione silenziosa */
+  }
+}
+
+fetchAppVersion();
 
 /* tema: segmented control */
 document.querySelectorAll('#themeSegmented [data-theme]').forEach((btn) => {

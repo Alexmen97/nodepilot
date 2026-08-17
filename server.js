@@ -22,6 +22,8 @@ const VNC_PREP_TTL_MS = 60 * 1000;
 /* prepId opaco (crypto.randomBytes) -> dati vncproxy PVE. Solo in memoria,
    mai persistito; single-use con TTL. ticket/port non lasciano il backend. */
 const vncPreps = new Map();
+/* tracking sessioni WebSocket attive (VNC e Shell) per graceful shutdown */
+const activeWsRelays = new Set();
 
 /* ---------------- config ---------------- */
 
@@ -2245,16 +2247,19 @@ async function handleVncUpgrade(req, socket, head, url) {
     clientWs.handleUpgrade(req, socket, head, (ws) => {
       ws.binaryType = 'arraybuffer';
       console.log('[vnc] client connesso');
+      const relay = { type: 'vnc', ws, pveWs };
+      activeWsRelays.add(relay);
+      const cleanup = () => activeWsRelays.delete(relay);
       ws.on('message', (data) => {
         if (pveWs.readyState === PveWebSocket.OPEN) pveWs.send(data);
       });
-      ws.on('close', (code) => { console.log('[vnc] client chiuso', code); pveWs.close(); });
-      ws.on('error', (e) => { console.log('[vnc] client error', e.message); pveWs.close(); });
+      ws.on('close', (code) => { console.log('[vnc] client chiuso', code); cleanup(); pveWs.close(); });
+      ws.on('error', (e) => { console.log('[vnc] client error', e.message); cleanup(); pveWs.close(); });
       pveWs.on('message', (data) => {
         if (ws.readyState === ws.OPEN) ws.send(data);
       });
-      pveWs.on('close', (code) => { console.log('[vnc] pve chiuso', code); ws.close(); });
-      pveWs.on('error', (e) => { console.log('[vnc] pve error', e.message); ws.close(); });
+      pveWs.on('close', (code) => { console.log('[vnc] pve chiuso', code); cleanup(); ws.close(); });
+      pveWs.on('error', (e) => { console.log('[vnc] pve error', e.message); cleanup(); ws.close(); });
     });
   } catch (e) {
     console.error('[vnc] errore upgrade:', e.message);
@@ -2331,16 +2336,19 @@ server.on('upgrade', async (req, socket, head) => {
     clientWs.handleUpgrade(req, socket, head, (ws) => {
       ws.binaryType = 'arraybuffer';
       console.log('[shell] client connesso');
+      const relay = { type: 'shell', ws, pveWs };
+      activeWsRelays.add(relay);
+      const cleanup = () => activeWsRelays.delete(relay);
       ws.on('message', (data) => {
         if (pveWs.readyState === PveWebSocket.OPEN) pveWs.send(data);
       });
-      ws.on('close', (code) => { console.log('[shell] client chiuso', code); pveWs.close(); });
-      ws.on('error', (e) => { console.log('[shell] client error', e.message); pveWs.close(); });
+      ws.on('close', (code) => { console.log('[shell] client chiuso', code); cleanup(); pveWs.close(); });
+      ws.on('error', (e) => { console.log('[shell] client error', e.message); cleanup(); pveWs.close(); });
       pveWs.on('message', (data) => {
         if (ws.readyState === ws.OPEN) ws.send(data);
       });
-      pveWs.on('close', (code) => { console.log('[shell] pve chiuso', code); ws.close(); });
-      pveWs.on('error', (e) => { console.log('[shell] pve error', e.message); ws.close(); });
+      pveWs.on('close', (code) => { console.log('[shell] pve chiuso', code); cleanup(); ws.close(); });
+      pveWs.on('error', (e) => { console.log('[shell] pve error', e.message); cleanup(); ws.close(); });
     });
   } catch (e) {
     console.error('[shell] errore upgrade:', e.message);
@@ -2359,3 +2367,64 @@ server.listen(PORT, () => {
   console.log('  Tour completato: ' + state.tourCompleted);
   console.log('');
 });
+
+const activeSockets = new Set();
+server.on('connection', (socket) => {
+  activeSockets.add(socket);
+  socket.on('close', () => activeSockets.delete(socket));
+});
+
+let isShuttingDown = false;
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log('\n[server] Ricevuto segnale ' + signal + ': avvio chiusura ordinata...');
+
+  /* 1. Hard timeout di sicurezza massimo 5 secondi per garantire l\x27uscita */
+  const hardTimeout = setTimeout(() => {
+    console.error('[server] Timeout di arresto (5s) superato: terminazione forzata.');
+    process.exit(1);
+  }, 5000);
+  if (typeof hardTimeout.unref === 'function') hardTimeout.unref();
+
+  /* 2. Chiusura ordinata delle sessioni WebSocket attive (VNC e Shell) con codice 1001 */
+  for (const relay of activeWsRelays) {
+    try {
+      if (relay.ws && relay.ws.readyState === PveWebSocket.OPEN) {
+        relay.ws.close(1001, 'Server shutting down');
+      }
+    } catch (_) {}
+    try {
+      if (relay.pveWs && relay.pveWs.readyState === PveWebSocket.OPEN) {
+        relay.pveWs.close();
+      }
+    } catch (_) {}
+  }
+  activeWsRelays.clear();
+
+  /* 3. Stop ricezione nuove connessioni HTTP */
+  server.close((err) => {
+    clearTimeout(hardTimeout);
+    if (err) {
+      console.error('[server] Errore durante la chiusura del server HTTP:', err.message);
+      process.exit(1);
+    }
+    console.log('[server] Chiusura completata con successo.');
+    process.exit(0);
+  });
+
+  /* 4. Grace period per le richieste HTTP residue prima del fallback finale sui socket */
+  const graceTimer = setTimeout(() => {
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    } else {
+      for (const socket of activeSockets) {
+        socket.destroy();
+      }
+    }
+  }, 1500);
+  if (typeof graceTimer.unref === 'function') graceTimer.unref();
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
