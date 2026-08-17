@@ -2952,39 +2952,22 @@ $('refreshSelect').onchange = async (e) => {
 
 /* ---------- Health engine (FASE 2): puro, nessun side effect ---------- */
 
-const HEALTH_THRESHOLDS = {
-  node: {
-    cpu: { warning: 0.8, critical: 0.95 },
-    ram: { warning: 0.9, critical: 0.96 },
-    rootfs: { warning: 0.8, critical: 0.9 }
-  },
-  guest: {
-    cpu: { warning: 0.8, critical: 0.95 },
-    ram: { warning: 0.85, critical: 0.95 }
-  },
-  lxc: { disk: { warning: 0.8, critical: 0.9 } }
-};
-
-/* finestre temporali (secondi) per gli alert informativi */
-const HEALTH_RECENT_REBOOT_S = 15 * 60;
-const HEALTH_RECENT_RESTART_S = 5 * 60;
+/* primitive condivise Health (public/health-core.js, UMD): la UI mantiene il
+   proprio stato in healthSamples; il backend usa lo stesso modulo con uno
+   stato separato. Logica anti-flap e soglie NON divergono mai. */
+const HEALTH_THRESHOLDS = HealthCore.HEALTH_THRESHOLDS;
+const HEALTH_RECENT_REBOOT_S = HealthCore.HEALTH_RECENT_REBOOT_S;
+const HEALTH_RECENT_RESTART_S = HealthCore.HEALTH_RECENT_RESTART_S;
 
 /* stato volatile anti-flapping: id check -> { crit, warn, ok, severity, firstSeen }.
    Nessuna persistenza: al reload riparte da zero (accettato in V1). */
 const healthSamples = new Map();
 
-const HEALTH_SEVERITY_ORDER = { critical: 0, warning: 1, info: 2 };
+const HEALTH_SEVERITY_ORDER = HealthCore.HEALTH_SEVERITY_ORDER;
 
 /* task alerts (FASE 4): allowlist -> severity; eventi conclusi, nessuna isteresi */
-const HEALTH_TASK_ALLOWLIST = {
-  vzdump: 'critical',
-  vzstart: 'warning', qmstart: 'warning',
-  vzstop: 'warning', vzshutdown: 'warning', qmstop: 'warning', qmshutdown: 'warning',
-  vzreboot: 'warning', qmreboot: 'warning',
-  qmmigrate: 'warning', qmsnapshot: 'warning',
-  vzrestore: 'warning', qmrestore: 'warning', qmclone: 'warning'
-};
-const HEALTH_TASK_WINDOW_S = 24 * 3600;
+const HEALTH_TASK_ALLOWLIST = HealthCore.HEALTH_TASK_ALLOWLIST;
+const HEALTH_TASK_WINDOW_S = HealthCore.HEALTH_TASK_WINDOW_S;
 const HEALTH_TASK_TTL_MS = 60000;
 
 /* ---------- Health: soglie configurabili e costanti ---------- */
@@ -3039,12 +3022,12 @@ function healthSettings() {
   return out;
 }
 
-const HEALTH_ZFS_BAD = ['DEGRADED', 'FAULTED', 'UNAVAIL'];
-const HEALTH_ZFS_ERRORS_OK = 'No known data errors';
-const HEALTH_LOAD_WARN_MULT = 1.5;
+const HEALTH_ZFS_BAD = HealthCore.HEALTH_ZFS_BAD;
+const HEALTH_ZFS_ERRORS_OK = HealthCore.HEALTH_ZFS_ERRORS_OK;
+const HEALTH_LOAD_WARN_MULT = HealthCore.HEALTH_LOAD_WARN_MULT;
 /* SMART V2.1: inventory 5 min, lettura per disco 15 min (mai auto-refetch) */
 const SMART_TTL_MS = 15 * 60 * 1000;
-const HEALTH_DISK_WEAR_CRITICAL = 5;
+const HEALTH_DISK_WEAR_CRITICAL = HealthCore.HEALTH_DISK_WEAR_CRITICAL;
 
 /* ---------- Backup & Snapshot Manager (FASE 3: vista globale READ) ---------- */
 
@@ -3938,104 +3921,15 @@ $('btnSnapshotCreate').onclick = async () => {
 /* cache task Health: fetch on-demand solo a vista Monitoraggio aperta, TTL 60s */
 const healthTaskCache = { data: null, fetchedAt: 0, fetching: false, error: false };
 
-function healthRatio(value, max) {
-  return typeof value === 'number' && Number.isFinite(value) &&
-    typeof max === 'number' && Number.isFinite(max) && max > 0 ? value / max : null;
-}
-
-function healthThresholdSeverity(ratio, thresholds) {
-  if (ratio === null) return null;
-  if (ratio >= thresholds.critical) return 'critical';
-  if (ratio >= thresholds.warning) return 'warning';
-  return null;
-}
-
-/* applica lo stato di un check: severity null rimuove lo stato (e il firstSeen).
-   firstSeen resta stabile finché l'alert resta attivo; nuovo ts alla ricomparsa. */
-function healthApplyState(id, entry, severity) {
-  if (severity === null) {
-    entry.severity = null;
-    entry.firstSeen = null;
-    healthSamples.delete(id);
-    return;
-  }
-  if (entry.severity !== severity && !entry.firstSeen) entry.firstSeen = Date.now();
-  entry.severity = severity;
-  healthSamples.set(id, entry);
-}
-
-/* check immediato (senza isteresi): offline/unknown/stopped/rootfs/disk/info */
-function healthImmediate(id, severity) {
-  const entry = healthSamples.get(id) || { severity: null, firstSeen: null };
-  healthApplyState(id, entry, severity);
-  return entry;
-}
-
-/* isteresi CPU/RAM: 2 campioni consecutivi per cambiare livello.
-   Mantiene il livello corrente finché non c'è una conferma, quindi:
-   NORMAL -> 96% x2 = CRITICAL; WARNING -> 96% x2 = CRITICAL;
-   CRITICAL -> 90% x2 = WARNING (downgrade, non sparire); CRITICAL -> 20% x2 = rimosso. */
-function healthHysteresis(id, value, thresholds) {
-  const entry = healthSamples.get(id) || { crit: 0, warn: 0, ok: 0, severity: null, firstSeen: null };
-  if (value >= thresholds.critical) {
-    entry.crit += 1; entry.warn = 0; entry.ok = 0;
-  } else if (value >= thresholds.warning) {
-    entry.warn += 1; entry.crit = 0; entry.ok = 0;
-  } else {
-    entry.ok += 1; entry.crit = 0; entry.warn = 0;
-  }
-  let desired = null;
-  if (entry.crit >= 2) desired = 'critical';
-  else if (entry.warn >= 2) desired = 'warning';
-  else if (entry.ok >= 2) desired = null;
-  else desired = entry.severity; /* campioni insufficienti: mantieni lo stato corrente */
-  if (desired === null && entry.severity === null) {
-    /* nessun alert attivo: conserva lo streak (accumulo campioni) senza firstSeen */
-    healthSamples.set(id, entry);
-    return entry;
-  }
-  healthApplyState(id, entry, desired);
-  return entry;
-}
-
-/* stati/eventi V2: alert immediato quando isBad, clear solo dopo N osservazioni
-   sane consecutive (evita flap su timeout singoli o transitori). */
-function healthState(id, severity, isBad, clearAfter) {
-  const entry = healthSamples.get(id) || { ok: 0, severity: null, firstSeen: null };
-  if (isBad) {
-    entry.ok = 0;
-    healthApplyState(id, entry, severity);
-    return entry;
-  }
-  entry.ok += 1;
-  if (entry.severity !== null && entry.ok >= (clearAfter || 1)) {
-    healthApplyState(id, entry, null);
-    return entry;
-  }
-  healthSamples.set(id, entry);
-  return entry;
-}
-
-/* load average: INFO se load1 >= cpus, WARNING se >= 1.5*cpus (2 campioni,
-   downgrade a scalino; MAI CRITICAL in V2.0). */
-function healthLoadHysteresis(id, load1, cpus) {
-  const entry = healthSamples.get(id) || { warn: 0, info: 0, ok: 0, severity: null, firstSeen: null };
-  const warnAt = cpus * HEALTH_LOAD_WARN_MULT;
-  if (load1 >= warnAt) { entry.warn += 1; entry.info = 0; entry.ok = 0; }
-  else if (load1 >= cpus) { entry.info += 1; entry.warn = 0; entry.ok = 0; }
-  else { entry.ok += 1; entry.warn = 0; entry.info = 0; }
-  let desired = null;
-  if (entry.warn >= 2) desired = 'warning';
-  else if (entry.info >= 2) desired = 'info';
-  else if (entry.ok >= 2) desired = null;
-  else desired = entry.severity;
-  if (desired === null && entry.severity === null) {
-    healthSamples.set(id, entry);
-    return entry;
-  }
-  healthApplyState(id, entry, desired);
-  return entry;
-}
+/* wrapper UI: delegano al modulo condiviso con lo stato della dashboard.
+   Firme identiche alle originali: i call site non cambiano. */
+function healthRatio(value, max) { return HealthCore.healthRatio(value, max); }
+function healthThresholdSeverity(ratio, thresholds) { return HealthCore.healthThresholdSeverity(ratio, thresholds); }
+function healthApplyState(id, entry, severity) { return HealthCore.healthApplyState(healthSamples, id, entry, severity); }
+function healthImmediate(id, severity) { return HealthCore.healthImmediate(healthSamples, id, severity); }
+function healthHysteresis(id, value, thresholds) { return HealthCore.healthHysteresis(healthSamples, id, value, thresholds); }
+function healthState(id, severity, isBad, clearAfter) { return HealthCore.healthState(healthSamples, id, severity, isBad, clearAfter); }
+function healthLoadHysteresis(id, load1, cpus) { return HealthCore.healthLoadHysteresis(healthSamples, id, load1, cpus); }
 
 function healthAlert(id, severity, category, titleKey, descriptionKey, params, serverId, serverName, node, guestType, guestId, guestName, ts, extra) {
   const x = extra && typeof extra === 'object' ? extra : {};

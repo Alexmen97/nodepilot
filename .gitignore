@@ -8,3 +8,5 @@ session.json
 patch_*.js
 test-*.js
 auth.json
+notifications.json
+alert-state.json

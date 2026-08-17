@@ -17,5 +17,10 @@
     "guestModes": {
       "pve-main:nodo1:qemu:100": "alwayson"
     }
+  },
+  "notifications": {
+    "center": {
+      "enabled": true
+    }
   }
 }

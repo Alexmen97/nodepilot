@@ -5,13 +5,15 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const notificationsMod = require('./notifications.js');
+const alertEngineMod = require('./alert-engine.js');
 
 const PORT = Number(process.env.PORT || 3100);
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const STATE_PATH = path.join(__dirname, 'state.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-let config = { servers: [], refreshMs: 10000, autoRefreshEnabled: true, theme: 'system', language: 'it', health: { guestModes: {} } };
+let config = { servers: [], refreshMs: 10000, autoRefreshEnabled: true, theme: 'system', language: 'it', health: { guestModes: {} }, notifications: { center: { enabled: true } } };
 let state = { tourCompleted: false, tourCompletedVersion: 0 };
 let statusCache = null;
 let statusCacheAt = 0;
@@ -1048,6 +1050,146 @@ async function healthClusterEntry(server) {
   return entry;
 }
 
+/* ---------------- Notification Center & Alert Engine (v1.3.0 FASE 1) ---------------- */
+
+/* helper condivisi con le route Log: normalizzati a livello modulo per il riuso
+   nel watchdog (alert-engine) senza duplicazione. */
+function normalizeTask(s, n, t) {
+  return {
+    serverId: s.id,
+    serverName: s.name,
+    node: t.node || n.node,
+    upid: t.upid,
+    type: t.type || 'unknown',
+    status: t.status || 'unknown',
+    vmid: t.id || null,
+    user: t.user || '',
+    starttime: t.starttime || 0,
+    endtime: t.endtime || 0,
+    pid: t.pid || null,
+  };
+}
+
+function parseSyslogLine(t) {
+  const m = /^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\S+)\s+([^:]+):\s?(.*)$/.exec(t || '');
+  if (!m) return { ts: 0, service: '', message: t || '' };
+  const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+  const mon = months[m[1]];
+  if (mon === undefined) return { ts: 0, service: '', message: t || '' };
+  const nowDate = new Date();
+  let d = new Date(nowDate.getFullYear(), mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+  if (d.getTime() > Date.now() + 86400000) {
+    d = new Date(nowDate.getFullYear() - 1, mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
+  }
+  return { ts: Math.floor(d.getTime() / 1000), service: m[7], message: m[8] };
+}
+
+async function fetchAllServers(serverId, fn) {
+  const targets = serverId
+    ? config.servers.filter((s) => s.id === serverId)
+    : config.servers;
+  const results = await Promise.all(targets.map(async (s) => {
+    try {
+      return { serverId: s.id, serverName: s.name, ok: true, data: await fn(s) };
+    } catch (e) {
+      return { serverId: s.id, serverName: s.name, ok: false, error: e.message, data: null };
+    }
+  }));
+  const all = [];
+  const errors = [];
+  for (const r of results) {
+    if (r.ok) all.push(...(r.data || []));
+    else errors.push({ serverName: r.serverName, error: r.error });
+  }
+  return { all, errors };
+}
+
+/* raccolta task recenti per il watchdog (stessa logica della route /api/logs/tasks) */
+async function collectTaskEvents() {
+  const since = Math.floor(Date.now() / 1000) - 24 * 3600;
+  const { all } = await fetchAllServers(null, async (s) => {
+    const nodes = await api(s, 'GET', '/api2/json/nodes');
+    const tasks = [];
+    for (const n of nodes) {
+      const nodeName = encodeURIComponent(n.node);
+      const list = await api(s, 'GET', '/api2/json/nodes/' + nodeName + '/tasks?limit=200&since=' + since);
+      for (const t of list || []) tasks.push(normalizeTask(s, n, t));
+    }
+    return tasks;
+  });
+  return all;
+}
+
+/* età dell'ultimo backup per guest: riusa backupStorageTargets (helper esistente).
+   Niente jobs in FASE 1: il "mai backup" resta esclusivo del Health Center UI. */
+async function collectBackupAge() {
+  const out = [];
+  for (const s of config.servers) {
+    const entry = { serverId: s.id, serverName: s.name, backups: [] };
+    try {
+      const { storages } = await backupStorageTargets(s);
+      for (const st of storages) {
+        try {
+          const content = await api(s, 'GET',
+            '/api2/json/nodes/' + encodeURIComponent(st.node) + '/storage/' + encodeURIComponent(st.storage) + '/content?content=backup');
+          for (const raw of content || []) {
+            entry.backups.push({
+              vmid: pveNumber(raw.vmid),
+              guestType: raw.subtype === 'lxc' || raw.subtype === 'qemu' ? raw.subtype : null,
+              ctime: pveNumber(raw.ctime),
+            });
+          }
+        } catch (_) { /* storage parziale: salta, il tick non si blocca */ }
+      }
+    } catch (_) { /* server non raggiungibile: salta */ }
+    out.push(entry);
+  }
+  return out;
+}
+
+async function collectStorage() {
+  const out = [];
+  for (const s of config.servers) {
+    try {
+      const { storages } = await healthStorageTargets(s);
+      out.push(...storages);
+    } catch (_) { /* salta */ }
+  }
+  return out;
+}
+
+async function collectZfs() {
+  const out = [];
+  for (const s of config.servers) {
+    try {
+      out.push(...await healthZfsPools(s));
+    } catch (_) { /* salta */ }
+  }
+  return out;
+}
+
+async function collectCluster() {
+  const out = [];
+  for (const s of config.servers) {
+    try {
+      out.push(await healthClusterEntry(s));
+    } catch (_) { /* salta */ }
+  }
+  return out;
+}
+
+async function fetchTaskStatus(server, node, upid) {
+  return api(server, 'GET',
+    '/api2/json/nodes/' + encodeURIComponent(node) + '/tasks/' + encodeURIComponent(upid) + '/status');
+}
+
+/* settings Notification Center: default sicuri, backward compatible */
+function safeNotificationsSettings() {
+  const n = config.notifications && typeof config.notifications === 'object' ? config.notifications : {};
+  const c = n.center && typeof n.center === 'object' ? n.center : {};
+  return { center: { enabled: c.enabled !== false } };
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
@@ -1192,60 +1334,6 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/status') return json(res, await getStatus());
 
     /* ---------- log Proxmox: task / system / cluster ---------- */
-
-    /* helper: normalizza un task Proxmox (campi reali di /nodes/{node}/tasks) */
-    function normalizeTask(s, n, t) {
-      return {
-        serverId: s.id,
-        serverName: s.name,
-        node: t.node || n.node,
-        upid: t.upid,
-        type: t.type || 'unknown',
-        status: t.status || 'unknown',
-        vmid: t.id || null,
-        user: t.user || '',
-        starttime: t.starttime || 0,
-        endtime: t.endtime || 0,
-        pid: t.pid || null,
-      };
-    }
-
-    /* helper: parsing affidabile di una riga syslog "Mmm dd HH:MM:SS host servizio: msg".
-       Le righe non conformi (es. continuazioni kernel) restano con ts=0 e testo originale. */
-    function parseSyslogLine(t) {
-      const m = /^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\S+)\s+([^:]+):\s?(.*)$/.exec(t || '');
-      if (!m) return { ts: 0, service: '', message: t || '' };
-      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-      const mon = months[m[1]];
-      if (mon === undefined) return { ts: 0, service: '', message: t || '' };
-      const now = new Date();
-      let d = new Date(now.getFullYear(), mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
-      if (d.getTime() > Date.now() + 86400000) {
-        d = new Date(now.getFullYear() - 1, mon, Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
-      }
-      return { ts: Math.floor(d.getTime() / 1000), service: m[7], message: m[8] };
-    }
-
-    /* helper: esegue una GET su tutti i server target e raccoglie errori per server */
-    async function fetchAllServers(serverId, fn) {
-      const targets = serverId
-        ? config.servers.filter((s) => s.id === serverId)
-        : config.servers;
-      const results = await Promise.all(targets.map(async (s) => {
-        try {
-          return { serverId: s.id, serverName: s.name, ok: true, data: await fn(s) };
-        } catch (e) {
-          return { serverId: s.id, serverName: s.name, ok: false, error: e.message, data: null };
-        }
-      }));
-      const all = [];
-      const errors = [];
-      for (const r of results) {
-        if (r.ok) all.push(...(r.data || []));
-        else errors.push({ serverName: r.serverName, error: r.error });
-      }
-      return { all, errors };
-    }
 
     /* Task: GET /nodes/{node}/tasks (since/until verificati su PVE 9.2) */
     if (p === '/api/logs/tasks' && req.method === 'POST') {
@@ -1623,6 +1711,10 @@ const server = http.createServer(async (req, res) => {
       if (isProtected === true) pveBody.protected = 1;
       try {
         const upid = await api(server, 'POST', '/api2/json/nodes/' + encodeURIComponent(node) + '/vzdump', pveBody);
+        if (upid) {
+          alertEngine.trackTask(upid, server.id, node, 'backup',
+            server.id + ':' + node + ':' + vmid, 'Guest ' + vmid);
+        }
         return json(res, { ok: true, serverId: server.id, node, vmid, storage, upid: upid || null });
       } catch (e) {
         if (e.pveStatus === 403) {
@@ -1692,6 +1784,10 @@ const server = http.createServer(async (req, res) => {
       if (type === 'qemu' && vmstate === true) pveBody.vmstate = 1;
       try {
         const upid = await api(server, 'POST', '/api2/json/nodes/' + encodeURIComponent(node) + '/' + type + '/' + vmid + '/snapshot', pveBody);
+        if (upid) {
+          alertEngine.trackTask(upid, server.id, node, 'snapshot',
+            server.id + ':' + node + ':' + type + ':' + vmid, 'Guest ' + vmid);
+        }
         return json(res, { ok: true, serverId: server.id, node, type, vmid, name, upid: upid || null });
       } catch (e) {
         if (e.pveStatus === 403) {
@@ -1940,7 +2036,20 @@ const server = http.createServer(async (req, res) => {
           },
         });
       }
-      return json(res, { ok: true, smart: normalizeSmartReading(raw) });
+      const smart = normalizeSmartReading(raw);
+      /* Alert Engine: SMART on-demand, MAI automatico. La lettura esplicita
+         dell'utente genera eventi (failed/settori/temp/wear). */
+      try {
+        alertEngine.observeSmart(smart, {
+          serverId: server.id,
+          serverName: server.name,
+          node,
+          disk,
+        });
+      } catch (e) {
+        console.error('[alert-engine] observeSmart fallito: ' + e.message);
+      }
+      return json(res, { ok: true, smart });
     }
 
     /* POST /api/health/settings
@@ -2001,6 +2110,38 @@ const server = http.createServer(async (req, res) => {
       config.health = { ...h, settings: candidate };
       saveConfig();
       return json(res, { ok: true, settings: safeHealthSettings() });
+    }
+
+    /* ---------- Notification Center (v1.3.0 FASE 1: backend core) ----------
+       Il frontend NON genera eventi: legge e interagisce. L'Alert Engine
+       scrive via notificationsStore.add() solo su transizioni di stato. */
+    if (p === '/api/notifications' && req.method === 'GET') {
+      const list = notificationsStore.list();
+      return json(res, { ok: true, notifications: list.notifications, unreadCount: list.unreadCount });
+    }
+
+    if (p === '/api/notifications/read-all' && req.method === 'POST') {
+      notificationsStore.markAllRead();
+      return json(res, { ok: true });
+    }
+
+    if (p === '/api/notifications/clear' && req.method === 'POST') {
+      notificationsStore.clear();
+      return json(res, { ok: true });
+    }
+
+    if (p.startsWith('/api/notifications/') && p.endsWith('/read') && req.method === 'POST') {
+      const id = decodeURIComponent(p.split('/')[3]);
+      const found = notificationsStore.markRead(id);
+      if (!found) return json(res, { ok: false, error: 'Notifica non trovata' }, 404);
+      return json(res, { ok: true });
+    }
+
+    if (p.startsWith('/api/notifications/') && req.method === 'DELETE') {
+      const id = decodeURIComponent(p.split('/')[3]);
+      const found = notificationsStore.remove(id);
+      if (!found) return json(res, { ok: false, error: 'Notifica non trovata' }, 404);
+      return json(res, { ok: true });
     }
 
     if (p === '/api/autorefresh' && req.method === 'POST') {
@@ -2360,12 +2501,45 @@ server.on('upgrade', async (req, socket, head) => {
 loadConfig();
 loadState();
 loadAuth();
+
+/* ---------------- Notification Center & Alert Engine (v1.3.0 FASE 1) ---------------- */
+
+const notificationsStore = notificationsMod.createNotifications({});
+notificationsStore.load();
+
+const alertEngine = alertEngineMod.createAlertEngine({
+  notify: (rec) => notificationsStore.add(rec),
+  getSettings: () => safeHealthSettings(),
+  collectors: {
+    getStatus: () => getStatus(),
+    getStorage: () => collectStorage(),
+    getZfs: () => collectZfs(),
+    getCluster: () => collectCluster(),
+    getTasks: () => collectTaskEvents(),
+    getBackupAge: () => collectBackupAge(),
+    getTaskStatus: async ({ serverId, node, upid }) => {
+      const server = config.servers.find((s) => s.id === serverId);
+      if (!server) return { status: 'notfound' }; /* server rimosso: task non più monitorabile */
+      try {
+        return await fetchTaskStatus(server, node, upid);
+      } catch (e) {
+        /* PVE 404 = task non più reperibile (es. task purgato o VM rimossa):
+           stato normalizzato per la classificazione terminale dell'engine */
+        if (e && e.pveStatus === 404) return { status: 'notfound' };
+        throw e; /* errori di rete/5xx: riprova al tick successivo */
+      }
+    },
+  },
+  log: (...args) => console.log(...args),
+});
+
 server.listen(PORT, () => {
   console.log('');
   console.log('  NodePilot avviata');
   console.log('  http://localhost:' + PORT);
   console.log('  Tour completato: ' + state.tourCompleted);
   console.log('');
+  alertEngine.start();
 });
 
 const activeSockets = new Set();
@@ -2379,6 +2553,9 @@ function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   console.log('\n[server] Ricevuto segnale ' + signal + ': avvio chiusura ordinata...');
+
+  /* 0. Stop watchdog: nessun timer, nessuna chiamata PVE dopo shutdown */
+  alertEngine.stop();
 
   /* 1. Hard timeout di sicurezza massimo 5 secondi per garantire l\x27uscita */
   const hardTimeout = setTimeout(() => {

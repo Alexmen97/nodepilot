@@ -4,6 +4,8 @@ node_modules/
 config.json
 auth.json
 state.json
+notifications.json
+alert-state.json
 session.json
 *.log
 .DS_Store
