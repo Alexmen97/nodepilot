@@ -6,6 +6,26 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.3.1 - 2026-08-17
+
+Status: **Stable**
+
+### Modificate
+
+- riorganizzata la finestra Impostazioni con navigazione per sezioni:
+  Generale, Sicurezza, Monitoraggio e Notifiche;
+- sidebar verticale su desktop e tab orizzontali scrollabili su mobile;
+- soglie Monitoraggio raggruppate in card Storage, Backup, Swap e Dischi;
+- sezione Notification Center / Telegram resa più ordinata e leggibile;
+- azioni di salvataggio rese contestuali:
+  "Salva soglie" e "Salva notifiche";
+- migliorato il comportamento hover/focus/active/disabled dei pulsanti
+  delle card guest;
+- mantenuta l'identità visiva separata dei pulsanti neutral, danger e Shell;
+- corretti focus ring e bordi sui browser desktop, evitando layout shift;
+- adattato il tour guidato alla nuova navigazione Settings;
+- cache PWA aggiornata a nodepilot-v12.
+
 ## 1.3.0 - 2026-08-17
 
 Status: **Stable**
