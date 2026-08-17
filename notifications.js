@@ -97,6 +97,39 @@ function createNotifications(opts) {
     return changed;
   }
 
+  /* aggiorna lo stato di delivery di un record (es. telegram pending/sent/failed).
+     Persistenza atomica; record inesistente -> false. */
+  function updateDelivery(id, provider, status, extra) {
+    if (!loaded) load();
+    const it = items.find((r) => r.id === id);
+    if (!it) return false;
+    const d = { provider, status, at: now() };
+    if (extra && typeof extra === 'object') Object.assign(d, extra);
+    it.delivery = d;
+    saveAtomic();
+    return true;
+  }
+
+  /* Reconciliation startup: ogni delivery del provider ancora 'pending'
+     (scritto da un processo precedente, quindi MAI 'in corso' nel processo
+     corrente) diventa uno stato terminale 'failed' con error 'interrupted'.
+     NIENTE reinvio automatico: un retry dopo restart potrebbe duplicare
+     messaggi già consegnati ma non ancora marcati 'sent' localmente.
+     Ritorna il numero di record riconciliati. */
+  function reconcilePendingDeliveries(provider, at) {
+    if (!loaded) load();
+    const t = at || now();
+    let changed = 0;
+    for (const r of items) {
+      if (r.delivery && r.delivery.provider === provider && r.delivery.status === 'pending') {
+        r.delivery = { provider, status: 'failed', error: 'interrupted', at: t };
+        changed += 1;
+      }
+    }
+    if (changed > 0) saveAtomic();
+    return changed;
+  }
+
   function remove(id) {
     if (!loaded) load();
     const before = items.length;
@@ -119,7 +152,8 @@ function createNotifications(opts) {
   }
 
   return {
-    load, add, list, markRead, markAllRead, remove, clear,
+    load, add, list, markRead, markAllRead, remove, clear, updateDelivery,
+    reconcilePendingDeliveries,
     count,
     get file() { return file; },
   };

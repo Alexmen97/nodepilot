@@ -7,13 +7,14 @@ const path = require('path');
 const crypto = require('crypto');
 const notificationsMod = require('./notifications.js');
 const alertEngineMod = require('./alert-engine.js');
+const telegramMod = require('./telegram.js');
 
 const PORT = Number(process.env.PORT || 3100);
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const STATE_PATH = path.join(__dirname, 'state.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
-let config = { servers: [], refreshMs: 10000, autoRefreshEnabled: true, theme: 'system', language: 'it', health: { guestModes: {} }, notifications: { center: { enabled: true } } };
+let config = { servers: [], refreshMs: 10000, autoRefreshEnabled: true, theme: 'system', language: 'it', health: { guestModes: {} }, notifications: { center: { enabled: true }, telegram: { enabled: false, botToken: '', chatId: '', language: 'it', events: { critical: true, warning: true, success: true, info: false, recovery: true } } } };
 let state = { tourCompleted: false, tourCompletedVersion: 0 };
 let statusCache = null;
 let statusCacheAt = 0;
@@ -1183,6 +1184,43 @@ async function fetchTaskStatus(server, node, upid) {
     '/api2/json/nodes/' + encodeURIComponent(node) + '/tasks/' + encodeURIComponent(upid) + '/status');
 }
 
+/* ---------- settings Notification Center & Telegram (FASE 2A) ---------- */
+
+const TELEGRAM_EVENT_KEYS = ['critical', 'warning', 'success', 'info', 'recovery'];
+const TELEGRAM_EVENT_DEFAULTS = { critical: true, warning: true, success: true, info: false, recovery: true };
+
+/* settings Telegram interni (con token) per il delivery: default sicuri,
+   backward compatible con config v1.2.3 (assenza chiave -> defaults). */
+function safeTelegramSettings() {
+  const n = config.notifications && typeof config.notifications === 'object' ? config.notifications : {};
+  const t = n.telegram && typeof n.telegram === 'object' ? n.telegram : {};
+  const events = {};
+  for (const k of TELEGRAM_EVENT_KEYS) {
+    events[k] = typeof t.events === 'object' && t.events !== null && typeof t.events[k] === 'boolean'
+      ? t.events[k]
+      : TELEGRAM_EVENT_DEFAULTS[k];
+  }
+  return {
+    enabled: t.enabled === true,
+    botToken: typeof t.botToken === 'string' ? t.botToken : '',
+    chatId: typeof t.chatId === 'string' ? t.chatId : '',
+    language: t.language === 'en' ? 'en' : 'it',
+    events,
+  };
+}
+
+/* versione pubblica (API): MAI il botToken */
+function publicTelegramSettings() {
+  const t = safeTelegramSettings();
+  return {
+    enabled: t.enabled,
+    configured: !!(t.botToken && t.chatId),
+    chatId: t.chatId,
+    language: t.language,
+    events: Object.assign({}, t.events),
+  };
+}
+
 /* settings Notification Center: default sicuri, backward compatible */
 function safeNotificationsSettings() {
   const n = config.notifications && typeof config.notifications === 'object' ? config.notifications : {};
@@ -2144,6 +2182,152 @@ const server = http.createServer(async (req, res) => {
       return json(res, { ok: true });
     }
 
+    /* ---------- Notification settings (FASE 2A: Telegram backend-only) ---------- */
+
+    if (p === '/api/notifications/settings' && req.method === 'GET') {
+      return json(res, {
+        ok: true,
+        center: safeNotificationsSettings().center,
+        telegram: publicTelegramSettings(),
+      });
+    }
+
+    if (p === '/api/notifications/settings' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (!b || typeof b !== 'object' || Array.isArray(b)) {
+        return json(res, { error: 'Body non valido' }, 400);
+      }
+      const current = safeTelegramSettings();
+      const next = {
+        enabled: current.enabled,
+        botToken: current.botToken,
+        chatId: current.chatId,
+        language: current.language,
+        events: Object.assign({}, current.events),
+      };
+
+      /* center.enabled (UI, FASE 2B): accettato per compatibilità futura */
+      if (b.center !== undefined) {
+        if (!b.center || typeof b.center !== 'object' || Array.isArray(b.center)) {
+          return json(res, { error: 'center non valido' }, 400);
+        }
+        if (b.center.enabled !== undefined && typeof b.center.enabled !== 'boolean') {
+          return json(res, { error: 'center.enabled deve essere booleano' }, 400);
+        }
+      }
+
+      const t = b.telegram !== undefined ? b.telegram : null;
+      if (t !== null) {
+        if (!t || typeof t !== 'object' || Array.isArray(t)) {
+          return json(res, { error: 'telegram non valido' }, 400);
+        }
+        if (t.enabled !== undefined && typeof t.enabled !== 'boolean') {
+          return json(res, { error: 'telegram.enabled deve essere booleano' }, 400);
+        }
+        if (t.chatId !== undefined) {
+          const cid = typeof t.chatId === 'string' ? t.chatId.trim() : '';
+          /* formato Telegram ragionevole: id numerico o @username */
+          const chatOk = /^-?d{4,15}$/.test(cid) || /^@[A-Za-z0-9_]{4,32}$/.test(cid);
+          if (!chatOk) {
+            return json(res, { error: 'chatId non valido' }, 400);
+          }
+          next.chatId = cid;
+        }
+        if (t.language !== undefined && t.language !== 'it' && t.language !== 'en') {
+          return json(res, { error: 'language non valido: solo it o en' }, 400);
+        }
+        if (t.language === 'it' || t.language === 'en') next.language = t.language;
+        if (t.events !== undefined) {
+          if (!t.events || typeof t.events !== 'object' || Array.isArray(t.events)) {
+            return json(res, { error: 'events non valido' }, 400);
+          }
+          for (const k of Object.keys(t.events)) {
+            if (!TELEGRAM_EVENT_KEYS.includes(k)) {
+              return json(res, { error: 'chiave evento sconosciuta: ' + k }, 400);
+            }
+            if (typeof t.events[k] !== 'boolean') {
+              return json(res, { error: 'events.' + k + ' deve essere booleano' }, 400);
+            }
+            next.events[k] = t.events[k];
+          }
+        }
+        /* token: presente valido -> sostituisce; assente o "" -> conserva;
+           clearToken:true -> rimuove. MAI restituito. */
+        if (t.clearToken === true) {
+          next.botToken = '';
+        } else if (t.botToken !== undefined && t.botToken !== '') {
+          if (typeof t.botToken !== 'string' || !/^\d+:[A-Za-z0-9_-]{30,}$/.test(t.botToken)) {
+            return json(res, { error: 'botToken non valido' }, 400);
+          }
+          next.botToken = t.botToken;
+        }
+        if (t.enabled === true) {
+          next.enabled = true;
+        } else if (t.enabled === false) {
+          next.enabled = false;
+        }
+      }
+
+      /* salva SOLO config.notifications.telegram: nessun altro settore toccato */
+      const n = config.notifications && typeof config.notifications === 'object' ? config.notifications : {};
+      config.notifications = Object.assign({}, n, {
+        telegram: next,
+      });
+      if (b.center !== undefined && b.center.enabled !== undefined) {
+        const c = n.center && typeof n.center === 'object' ? n.center : {};
+        config.notifications.center = Object.assign({}, c, { enabled: b.center.enabled });
+      }
+      saveConfig();
+      return json(res, {
+        ok: true,
+        center: safeNotificationsSettings().center,
+        telegram: publicTelegramSettings(),
+      });
+    }
+
+    /* ---------- POST /api/notifications/test (FASE 2A) ---------- */
+    if (p === '/api/notifications/test' && req.method === 'POST') {
+        const ip = clientIp(req);
+        const last = telegramTestRate.get(ip) || 0;
+        const elapsed = Date.now() - last;
+        if (elapsed < 60 * 1000) {
+          return json(res, {
+            ok: false,
+            provider: 'telegram',
+            code: 'rate_limited',
+            retryAfter: Math.ceil((60 * 1000 - elapsed) / 1000),
+          }, 429);
+        }
+        const set = safeTelegramSettings();
+        if (!set.enabled) {
+          return json(res, { ok: false, provider: 'telegram', code: 'disabled' }, 400);
+        }
+        if (!set.botToken || !set.chatId) {
+          return json(res, { ok: false, provider: 'telegram', code: 'not_configured' }, 400);
+        }
+        telegramTestRate.set(ip, Date.now());
+        const text = '🧪 TEST — NodePilot\n' +
+          (set.language === 'en' ? 'Test notification at ' : 'Notifica di test alle ') +
+          new Date().toLocaleString(set.language === 'en' ? 'en-GB' : 'it-IT');
+        const sender = telegramMod.createTelegramSender();
+        const res2 = await sender.sendMessage(set.botToken, set.chatId, text);
+        if (res2.ok) {
+          return json(res, { ok: true, provider: 'telegram' });
+        }
+        /* errori sanitizzati: MAI body/URL/token Telegram */
+        const codeMap = {
+          unauthorized: 'unauthorized',
+          forbidden: 'forbidden',
+          chat_not_found: 'chat_not_found',
+          rate_limited: 'rate_limited',
+          invalid_request: 'invalid_settings',
+          telegram_unavailable: 'telegram_unavailable',
+        };
+        const code = codeMap[res2.code] || (res2.code && res2.code.startsWith('telegram_error') ? 'telegram_unavailable' : 'network_error');
+        const status = res2.code === 'unauthorized' ? 401 : 400;
+        return json(res, { ok: false, provider: 'telegram', code }, status);
+      }
+
     if (p === '/api/autorefresh' && req.method === 'POST') {
       const b = await readBody(req);
       config.autoRefreshEnabled = !!b.enabled;
@@ -2507,8 +2691,30 @@ loadAuth();
 const notificationsStore = notificationsMod.createNotifications({});
 notificationsStore.load();
 
+/* Delivery Telegram: reconciliation startup — i record rimasti 'pending'
+   da un processo precedente diventano failed/interrupted (nessun reinvio:
+   un retry dopo restart potrebbe duplicare messaggi già consegnati). */
+{
+  const n = notificationsStore.reconcilePendingDeliveries('telegram');
+  if (n > 0) console.log('[telegram] ' + n + ' delivery pending riconciliati come interrupted');
+}
+
+/* rate limit in-memory POST /api/notifications/test: 1 ogni 60s per IP */
+const telegramTestRate = new Map();
+
+/* Telegram delivery (FASE 2A): consumer dello store, indipendente da
+   center.enabled e dal browser. Coda concorrenza 1, isolata dal tick. */
+const telegramDelivery = telegramMod.createTelegramDelivery({
+  getSettings: () => safeTelegramSettings(),
+  updateDelivery: (id, status) => notificationsStore.updateDelivery(id, status.provider, status.status, status),
+  log: (...args) => console.log(...args),
+});
+
 const alertEngine = alertEngineMod.createAlertEngine({
-  notify: (rec) => notificationsStore.add(rec),
+  notify: (rec) => {
+    const item = notificationsStore.add(rec);
+    if (item) telegramDelivery.enqueue(item);
+  },
   getSettings: () => safeHealthSettings(),
   collectors: {
     getStatus: () => getStatus(),
@@ -2556,6 +2762,8 @@ function gracefulShutdown(signal) {
 
   /* 0. Stop watchdog: nessun timer, nessuna chiamata PVE dopo shutdown */
   alertEngine.stop();
+  /* 0b. Flush bounded della coda Telegram (max 2s), poi nessun invio */
+  telegramDelivery.stop();
 
   /* 1. Hard timeout di sicurezza massimo 5 secondi per garantire l\x27uscita */
   const hardTimeout = setTimeout(() => {

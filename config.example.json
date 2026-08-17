@@ -21,6 +21,19 @@
   "notifications": {
     "center": {
       "enabled": true
+    },
+    "telegram": {
+      "enabled": false,
+      "botToken": "",
+      "chatId": "",
+      "language": "it",
+      "events": {
+        "critical": true,
+        "warning": true,
+        "success": true,
+        "info": false,
+        "recovery": true
+      }
     }
   }
 }
