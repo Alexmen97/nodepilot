@@ -6,6 +6,31 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.2.1 - 2026-08-17
+
+Status: **Stable**
+
+### Aggiunte
+
+- badge versione nella topbar, con versione dell'applicazione letta da
+  `package.json` e degrado silenzioso se il dato non è disponibile;
+- footer con credito sviluppatore e link al profilo GitHub di Alexmen97;
+- endpoint pubblico read-only `GET /api/version`, che restituisce
+  esclusivamente nome e versione dell'applicazione.
+
+### Modificate
+
+- console QEMU VNC: qualità e compressione ottimizzate per ridurre il
+  traffico trasferito e migliorare la reattività percepita durante
+  l'utilizzo interattivo;
+- console QEMU VNC: resize remoto disattivato (`resizeSession=false`) sulle
+  richieste non supportate, mantenendo invariato lo scaling locale del
+  viewport ed eliminando i warning ripetuti di resize;
+- layout della topbar e della navigazione migliorato sui viewport più
+  stretti, con comportamento responsive e footer centrato;
+- cache PWA aggiornata a `nodepilot-v8` e console VNC a
+  `vnc-console.js?v=2`.
+
 ## 1.2.0 - 2026-08-16
 
 Status: **Stable**
