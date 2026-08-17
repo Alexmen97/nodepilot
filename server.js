@@ -2227,7 +2227,7 @@ const server = http.createServer(async (req, res) => {
         if (t.chatId !== undefined) {
           const cid = typeof t.chatId === 'string' ? t.chatId.trim() : '';
           /* formato Telegram ragionevole: id numerico o @username */
-          const chatOk = /^-?d{4,15}$/.test(cid) || /^@[A-Za-z0-9_]{4,32}$/.test(cid);
+          const chatOk = /^-?\d{4,15}$/.test(cid) || /^@[A-Za-z0-9_]{4,32}$/.test(cid);
           if (!chatOk) {
             return json(res, { error: 'chatId non valido' }, 400);
           }

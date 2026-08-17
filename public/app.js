@@ -107,6 +107,11 @@ function mapAuthError(status, data) {
 function stopFrontendWork() {
   stopAutoRefresh();
   stopTaskTimer();
+  notifStopPolling();
+  notifState.list = [];
+  notifState.unread = 0;
+  notifState.fetched = false;
+  notifState.error = false;
   if (shellWs) {
     try { closeShell(); } catch (_) { /* ignora */ }
   }
@@ -436,6 +441,8 @@ function applyLanguage() {
   $('autoToggleText').textContent = t('auto.on');
   $('refreshSelect').closest('.auto-refresh').title = t('auto.interval.title');
   $('btnSettings').title = t('settings');
+  const tgTokPh = $('tgBotToken');
+  if (tgTokPh) tgTokPh.placeholder = t('settings.notifications.tokenPlaceholder');
   $('btnHamburger').title = t('settings');
   $('drawerTitle').textContent = t('app.title');
   $('btnDrawerSettings').querySelector('span').textContent = t('settings.text');
@@ -2324,6 +2331,421 @@ function closeServerModal() {
   state.editingServerId = null;
 }
 
+/* ================= Notification Center UI (v1.3.0) ================= */
+
+const NOTIF_POLL_MS = 30 * 1000;
+const notifState = {
+  list: [],
+  unread: 0,
+  filter: 'all',
+  loading: false,
+  error: false,
+  fetched: false,
+  centerEnabled: true,
+  open: false,
+};
+let notifTimer = null;
+let notifBusy = false;
+
+function notifRelTime(ts) {
+  const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
+  if (m < 1) return t('notifications.time.now');
+  if (m < 60) return t('notifications.time.min', { n: m });
+  const h = Math.floor(m / 60);
+  if (h < 24) return t('notifications.time.hour', { n: h });
+  return t('notifications.time.day', { n: Math.floor(h / 24) });
+}
+
+function notifSeverityIcon(sev, recovery) {
+  if (recovery) return '🟢';
+  if (sev === 'critical') return '✕';
+  if (sev === 'warning') return '⚠';
+  if (sev === 'success') return '✓';
+  return 'ℹ';
+}
+
+function notifDeliveryLabel(delivery) {
+  if (!delivery || !delivery.provider) return '';
+  let key = 'notifications.delivery.' + delivery.status;
+  if (delivery.status === 'failed') {
+    const errKey = 'notifications.delivery.err.' + (delivery.error || 'generic');
+    key = t(errKey) === errKey ? 'notifications.delivery.err.generic' : errKey;
+  } else if (!['sent', 'pending', 'failed'].includes(delivery.status)) {
+    return '';
+  }
+  const label = t(key);
+  return label === key ? '' : label;
+}
+
+function notifFilterMatches(rec) {
+  if (notifState.filter === 'all') return true;
+  if (notifState.filter === 'recovery') return rec.recovery === true;
+  return rec.recovery !== true && rec.severity === notifState.filter;
+}
+
+function notifRenderBadge() {
+  const badge = $('bellBadge');
+  const wrap = $('bellWrap');
+  if (!badge || !wrap) return;
+  const enabled = notifState.centerEnabled;
+  wrap.hidden = !enabled;
+  if (!enabled) {
+    badge.hidden = true;
+    return;
+  }
+  if (notifState.unread > 0) {
+    badge.textContent = notifState.unread > 99 ? '99+' : String(notifState.unread);
+    badge.hidden = false;
+    badge.setAttribute('aria-label', t('notifications.unread') + ': ' + notifState.unread);
+  } else {
+    badge.hidden = true;
+  }
+}
+
+function notifRenderList() {
+  const listEl = $('notifList');
+  const emptyEl = $('notifEmpty');
+  const errEl = $('notifError');
+  const loadEl = $('notifLoading');
+  if (!listEl) return;
+  if (notifState.loading && !notifState.fetched) {
+    loadEl.hidden = false;
+    emptyEl.hidden = true;
+    errEl.hidden = true;
+  } else {
+    loadEl.hidden = true;
+  }
+  if (notifState.error && notifState.list.length === 0) {
+    errEl.hidden = false;
+    emptyEl.hidden = true;
+    listEl.innerHTML = '';
+    return;
+  }
+  errEl.hidden = true;
+  const filtered = notifState.list.filter(notifFilterMatches);
+  if (filtered.length === 0) {
+    emptyEl.hidden = false;
+    listEl.innerHTML = '';
+    return;
+  }
+  emptyEl.hidden = true;
+  listEl.innerHTML = filtered.map((r) => {
+    const title = t(r.titleKey) === r.titleKey ? t('notifications.title') : t(r.titleKey);
+    const ctx = [];
+    if (r.context && r.context.serverName) ctx.push(esc(r.context.serverName));
+    if (r.context && r.context.node) ctx.push(esc(r.context.node));
+    if (r.context && r.context.storage) ctx.push(esc(r.context.storage));
+    if (r.context && r.context.pool) ctx.push(esc(r.context.pool));
+    if (r.context && r.context.guestName) ctx.push(esc(r.context.guestName));
+    if (r.context && r.context.disk) ctx.push(esc(r.context.disk));
+    const abs = new Date(r.ts).toLocaleString(langPref() === 'en' ? 'en-GB' : 'it-IT');
+    const delivery = notifDeliveryLabel(r.delivery);
+    const recBadge = r.recovery === true
+      ? '<span class="notif-recovery-badge">' + esc(t('notifications.recovery')) + '</span>' : '';
+    return '<div class="notif-item' + (r.read ? '' : ' notif-unread') + '" role="listitem" data-id="' + esc(r.id) + '">' +
+      '<span class="notif-item-icon notif-sev-' + esc(r.severity) + '" aria-hidden="true">' + notifSeverityIcon(r.severity, r.recovery === true) + '</span>' +
+      '<div class="notif-item-body">' +
+        '<div class="notif-item-title">' + esc(title) + recBadge + '</div>' +
+        (ctx.length ? '<div class="notif-item-ctx">' + ctx.join(' · ') + '</div>' : '') +
+        '<div class="notif-item-meta">' + esc(notifRelTime(r.ts)) + ' · ' + esc(abs) +
+          (delivery ? ' · ' + esc(delivery) : '') + '</div>' +
+      '</div>' +
+      '<div class="notif-item-actions">' +
+        (r.read ? '' : '<button type="button" class="icon-btn notif-act" data-act="read" title="' + esc(t('notifications.read')) + '" aria-label="' + esc(t('notifications.read')) + '">✓</button>') +
+        '<button type="button" class="icon-btn notif-act notif-act-danger" data-act="delete" title="' + esc(t('notifications.delete')) + '" aria-label="' + esc(t('notifications.delete')) + '">🗑</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function notifSetFilter(f) {
+  notifState.filter = f;
+  document.querySelectorAll('.notif-filter').forEach((b) => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  notifRenderList();
+}
+
+async function notifFetch(force) {
+  if (notifBusy) return;
+  if (!force && notifState.fetched && Date.now() - (notifState.fetchedAt || 0) < 5000) return;
+  notifBusy = true;
+  notifState.loading = true;
+  notifRenderList();
+  try {
+    const res = await fetch('/api/notifications');
+    if (res.status === 401) { notifBusy = false; return; }
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Errore');
+    notifState.list = Array.isArray(data.notifications) ? data.notifications : [];
+    notifState.unread = data.unreadCount || 0;
+    notifState.error = false;
+    notifState.fetched = true;
+    notifState.fetchedAt = Date.now();
+  } catch (_) {
+    /* errore GET non blocca Dashboard/Health: badge mantiene l'ultimo valore,
+       pannello mostra errore solo se la lista è vuota */
+    notifState.error = true;
+  } finally {
+    notifBusy = false;
+    notifState.loading = false;
+    notifRenderBadge();
+    if (notifState.open) notifRenderList();
+  }
+}
+
+function notifOpen() {
+  notifState.open = true;
+  const panel = $('notifPanel');
+  const bell = $('btnBell');
+  if (panel) panel.hidden = false;
+  if (bell) bell.setAttribute('aria-expanded', 'true');
+  notifFetch(true);
+}
+
+function notifClose() {
+  notifState.open = false;
+  const panel = $('notifPanel');
+  const bell = $('btnBell');
+  if (panel) panel.hidden = true;
+  if (bell) bell.setAttribute('aria-expanded', 'false');
+}
+
+function notifToggle() {
+  if (notifState.open) notifClose();
+  else notifOpen();
+}
+
+function notifStartPolling() {
+  notifStopPolling();
+  notifFetch(true);
+  notifTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') notifFetch(false);
+  }, NOTIF_POLL_MS);
+}
+
+function notifStopPolling() {
+  if (notifTimer) {
+    clearInterval(notifTimer);
+    notifTimer = null;
+  }
+  notifClose();
+}
+
+async function notifActionRead(id) {
+  try {
+    const res = await fetch('/api/notifications/' + encodeURIComponent(id) + '/read', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    const it = notifState.list.find((r) => r.id === id);
+    if (it) { it.read = true; notifState.unread = Math.max(0, notifState.unread - 1); }
+    notifRenderBadge();
+    notifRenderList();
+  } catch (_) {
+    toast(t('notifications.loadError'), 'err');
+  }
+}
+
+async function notifActionDelete(id) {
+  try {
+    const res = await fetch('/api/notifications/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!res.ok) throw new Error();
+    const removed = notifState.list.find((r) => r.id === id);
+    notifState.list = notifState.list.filter((r) => r.id !== id);
+    if (removed && !removed.read) notifState.unread = Math.max(0, notifState.unread - 1);
+    notifRenderBadge();
+    notifRenderList();
+  } catch (_) {
+    toast(t('notifications.loadError'), 'err');
+  }
+}
+
+async function notifReadAll() {
+  try {
+    const res = await fetch('/api/notifications/read-all', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    notifState.list.forEach((r) => { r.read = true; });
+    notifState.unread = 0;
+    notifRenderBadge();
+    notifRenderList();
+    toast(t('notifications.allRead'), 'ok');
+  } catch (_) {
+    toast(t('notifications.loadError'), 'err');
+  }
+}
+
+async function notifClear() {
+  try {
+    const res = await fetch('/api/notifications/clear', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    notifState.list = [];
+    notifState.unread = 0;
+    notifRenderBadge();
+    notifRenderList();
+    toast(t('notifications.cleared'), 'ok');
+  } catch (_) {
+    toast(t('notifications.loadError'), 'err');
+  }
+}
+
+/* ---------- Settings Notifiche ---------- */
+
+function tgToggleOn(el, on) {
+  if (!el) return;
+  el.classList.toggle('on', !!on);
+  el.classList.toggle('off', !on);
+  el.setAttribute('aria-checked', String(!!on));
+}
+
+function notifLoadSettingsUI(cfg) {
+  const tg = cfg && cfg.telegram ? cfg.telegram : {};
+  notifState.centerEnabled = !(cfg && cfg.center && cfg.center.enabled === false);
+  tgToggleOn($('notifCenterToggle'), notifState.centerEnabled);
+  tgToggleOn($('tgEnabledToggle'), tg.enabled === true);
+  $('tgChatId').value = tg.chatId || '';
+  $('tgLanguage').value = tg.language === 'en' ? 'en' : 'it';
+  $('tgConfigured').hidden = tg.configured !== true;
+  const ev = tg.events || {};
+  tgToggleOn($('tgEvCritical'), ev.critical !== false);
+  tgToggleOn($('tgEvWarning'), ev.warning !== false);
+  tgToggleOn($('tgEvSuccess'), ev.success !== false);
+  tgToggleOn($('tgEvInfo'), ev.info === true);
+  tgToggleOn($('tgEvRecovery'), ev.recovery !== false);
+  notifRenderBadge();
+}
+
+async function notifLoadSettings() {
+  try {
+    const res = await fetch('/api/notifications/settings');
+    const data = await res.json();
+    if (res.ok && data.ok) notifLoadSettingsUI(data);
+  } catch (_) { /* settings non bloccanti */ }
+}
+
+function notifCollectSettings() {
+  const tgl = (el) => !!(el && el.classList.contains('on'));
+  const botToken = $('tgBotToken').value;
+  const chatId = $('tgChatId').value.trim();
+  return {
+    center: { enabled: tgl($('notifCenterToggle')) },
+    telegram: {
+      enabled: tgl($('tgEnabledToggle')),
+      /* chatId vuoto -> non inviato (backend conserva l'esistente) */
+      chatId: chatId !== '' ? chatId : undefined,
+      language: $('tgLanguage').value,
+      events: {
+        critical: tgl($('tgEvCritical')),
+        warning: tgl($('tgEvWarning')),
+        success: tgl($('tgEvSuccess')),
+        info: tgl($('tgEvInfo')),
+        recovery: tgl($('tgEvRecovery')),
+      },
+      /* token: campo vuoto -> non inviato (backend conserva) */
+      botToken: botToken !== '' ? botToken : undefined,
+    },
+  };
+}
+
+async function notifSaveSettings() {
+  const errEl = $('nsError');
+  errEl.hidden = true;
+  try {
+    const body = notifCollectSettings();
+    const res = await fetch('/api/notifications/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      const msg = data && data.error ? data.error : t('settings.notifications.saveError');
+      errEl.textContent = '⚠️ ' + msg;
+      errEl.hidden = false;
+      return;
+    }
+    $('tgBotToken').value = '';
+    notifLoadSettingsUI(data);
+    toast(t('settings.notifications.saved'), 'ok');
+  } catch (_) {
+    errEl.textContent = '⚠️ ' + t('settings.notifications.saveError');
+    errEl.hidden = false;
+  }
+}
+
+async function notifRemoveToken() {
+  try {
+    const res = await fetch('/api/notifications/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegram: { clearToken: true } }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error();
+    notifLoadSettingsUI(data);
+    toast(t('settings.notifications.tokenRemoved'), 'ok');
+  } catch (_) {
+    toast(t('settings.notifications.saveError'), 'err');
+  }
+}
+
+async function notifTestTelegram() {
+  try {
+    const res = await fetch('/api/notifications/test', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      toast(t('telegram.test.sent'), 'ok');
+      return;
+    }
+    const code = data.code || 'error';
+    const key = 'telegram.test.' + code;
+    toast(t(key) === key ? t('telegram.test.error') : t(key), 'err');
+  } catch (_) {
+    toast(t('telegram.test.network_error'), 'err');
+  }
+}
+
+/* ---------- wire notifiche ---------- */
+
+$('btnBell').onclick = notifToggle;
+$('btnNotifClose').onclick = notifClose;
+$('btnNotifReadAll').onclick = notifReadAll;
+$('btnNotifClear').onclick = notifClear;
+$('btnNotifRetry').onclick = () => notifFetch(true);
+document.querySelectorAll('.notif-filter').forEach((b) => {
+  b.onclick = () => notifSetFilter(b.dataset.filter);
+});
+$('notifList').addEventListener('click', (e) => {
+  const act = e.target.closest('[data-act]');
+  const item = e.target.closest('.notif-item');
+  if (!act || !item) return;
+  const id = item.dataset.id;
+  if (act.dataset.act === 'read') notifActionRead(id);
+  else if (act.dataset.act === 'delete') notifActionDelete(id);
+});
+$('btnNotifSave').onclick = notifSaveSettings;
+$('btnTgRemoveToken').onclick = notifRemoveToken;
+$('btnTgTest').onclick = notifTestTelegram;
+$('tgBotToken').placeholder = t('settings.notifications.tokenPlaceholder');
+
+/* toggle settings: click -> flip classe on/off (aria-checked) */
+['notifCenterToggle', 'tgEnabledToggle', 'tgEvCritical', 'tgEvWarning', 'tgEvSuccess', 'tgEvInfo', 'tgEvRecovery'].forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('click', () => {
+    const on = el.classList.toggle('on');
+    el.classList.toggle('off', !on);
+    el.setAttribute('aria-checked', String(on));
+  });
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && notifState.open) notifClose();
+});
+document.addEventListener('click', (e) => {
+  if (!notifState.open) return;
+  if (e.target.closest('#notifPanel') || e.target.closest('#btnBell')) return;
+  notifClose();
+});
+
 /* ---------- init ---------- */
 
 $('btnSettings').onclick = () => {
@@ -2801,6 +3223,8 @@ async function loadDashboard() {
     initGuestDetail();
     updateAutoRefreshUI();
     startAutoRefresh(ms);
+    notifLoadSettings();
+    notifStartPolling();
     refresh();
     updateTourBadge();
     /* nuovo utente (mai visto alcun tour): intro con Inizia/Salta, non invasivo */

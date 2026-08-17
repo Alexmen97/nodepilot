@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=20">
+  <link rel="stylesheet" href="style.css?v=21">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -86,6 +86,15 @@
         <span id="connText">Connessione…</span>
       </div>
       <span class="offline-chip" id="offlineChip" hidden>Offline</span>
+      <div class="bell-wrap" id="bellWrap" hidden>
+        <button class="icon-btn" id="btnBell" type="button" title="Notifiche" aria-label="Notifiche" aria-expanded="false" aria-controls="notifPanel">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+          </svg>
+          <span class="bell-badge" id="bellBadge" hidden>0</span>
+        </button>
+      </div>
       <button class="icon-btn" id="btnSettings" title="Impostazioni">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3"></circle>
@@ -94,6 +103,38 @@
       </button>
     </div>
   </header>
+
+  <div class="notif-panel glass" id="notifPanel" hidden role="region" aria-label="Notifiche" aria-live="polite">
+    <div class="notif-panel-head">
+      <span class="notif-panel-title" data-i18n="notifications.title">Notifiche</span>
+      <div class="notif-panel-actions">
+        <button type="button" class="ghost-btn notif-btn" id="btnNotifReadAll" data-i18n="notifications.readAll">Segna tutte lette</button>
+        <button type="button" class="ghost-btn notif-btn notif-btn-danger" id="btnNotifClear" data-i18n="notifications.clear">Svuota</button>
+        <button type="button" class="icon-btn" id="btnNotifClose" aria-label="Chiudi">✕</button>
+      </div>
+    </div>
+    <div class="notif-filters" role="group" aria-label="Filtri">
+      <button type="button" class="notif-filter active" data-filter="all" data-i18n="notifications.filterAll">Tutte</button>
+      <button type="button" class="notif-filter" data-filter="critical" data-i18n="notifications.filterCritical">Critical</button>
+      <button type="button" class="notif-filter" data-filter="warning" data-i18n="notifications.filterWarning">Warning</button>
+      <button type="button" class="notif-filter" data-filter="success" data-i18n="notifications.filterSuccess">Success</button>
+      <button type="button" class="notif-filter" data-filter="info" data-i18n="notifications.filterInfo">Info</button>
+      <button type="button" class="notif-filter" data-filter="recovery" data-i18n="notifications.filterRecovery">Recovery</button>
+    </div>
+    <div class="notif-list" id="notifList" role="list"></div>
+    <div class="notif-empty" id="notifEmpty" hidden>
+      <span>🔔</span>
+      <p data-i18n="notifications.empty">Nessuna notifica</p>
+    </div>
+    <div class="notif-loading" id="notifLoading" hidden>
+      <span class="spinner-ring" aria-hidden="true"></span>
+      <span data-i18n="notifications.loading">Caricamento…</span>
+    </div>
+    <div class="notif-error" id="notifError" role="alert" hidden>
+      <span data-i18n="notifications.error">Impossibile caricare le notifiche</span>
+      <button type="button" class="ghost-btn" id="btnNotifRetry" data-i18n="notifications.retry">Riprova</button>
+    </div>
+  </div>
 
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
   <aside class="drawer" id="drawer" aria-hidden="true">
@@ -688,6 +729,74 @@
           <div class="auth-error" id="hsError" role="alert" aria-live="assertive" hidden></div>
         </div>
 
+        <div class="field">
+          <label data-i18n="settings.notifications.title">NOTIFICHE</label>
+          <p class="hint" data-i18n="settings.notifications.hint">Il Notification Center raccoglie gli eventi rilevati dal backend. Telegram è un canale di consegna indipendente, attivo anche con il browser chiuso.</p>
+
+          <div class="toggle-row">
+            <span data-i18n="settings.notifications.center">Notification Center</span>
+            <button type="button" class="toggle" id="notifCenterToggle" role="switch" aria-checked="true" aria-label="Notification Center">
+              <span class="toggle-thumb"></span>
+            </button>
+          </div>
+
+          <label class="settings-subtitle" data-i18n="settings.notifications.telegram">TELEGRAM</label>
+          <div class="toggle-row">
+            <span data-i18n="settings.notifications.telegramEnabled">Telegram attivo</span>
+            <button type="button" class="toggle" id="tgEnabledToggle" role="switch" aria-checked="false" aria-label="Telegram attivo">
+              <span class="toggle-thumb"></span>
+            </button>
+          </div>
+          <div class="toggle-row">
+            <span data-i18n="settings.notifications.token">Bot Token</span>
+            <span class="notif-configured" id="tgConfigured" hidden data-i18n="settings.notifications.configured">Configurato</span>
+          </div>
+          <input type="password" id="tgBotToken" class="text-input" autocomplete="new-password"
+            placeholder="Lascia vuoto per mantenere il token attuale">
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" id="btnTgRemoveToken" data-i18n="settings.notifications.removeToken">Rimuovi token</button>
+          </div>
+          <div class="toggle-row">
+            <span data-i18n="settings.notifications.chatId">Chat ID</span>
+            <input type="text" id="tgChatId" class="text-input notif-input" autocomplete="off" placeholder="123456789 o @canale">
+          </div>
+          <div class="toggle-row">
+            <span data-i18n="settings.notifications.language">Lingua messaggi Telegram</span>
+            <select id="tgLanguage" class="select-input">
+              <option value="it">🇮🇹 Italiano</option>
+              <option value="en">🇬🇧 English</option>
+            </select>
+          </div>
+          <label class="settings-subtitle" data-i18n="settings.notifications.events">EVENTI</label>
+          <div class="notif-events-grid">
+            <div class="toggle-row">
+              <span data-i18n="settings.notifications.critical">Critical</span>
+              <button type="button" class="toggle" id="tgEvCritical" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.notifications.warning">Warning</span>
+              <button type="button" class="toggle" id="tgEvWarning" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.notifications.success">Success</span>
+              <button type="button" class="toggle" id="tgEvSuccess" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.notifications.info">Info</span>
+              <button type="button" class="toggle" id="tgEvInfo" role="switch" aria-checked="false"><span class="toggle-thumb"></span></button>
+            </div>
+            <div class="toggle-row">
+              <span data-i18n="settings.notifications.recovery">Recovery</span>
+              <button type="button" class="toggle" id="tgEvRecovery" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="ghost-btn" id="btnTgTest" data-i18n="settings.notifications.test">Invia notifica di prova</button>
+            <button type="button" class="primary-btn" id="btnNotifSave" data-i18n="settings.notifications.save">Salva</button>
+          </div>
+          <div class="auth-error" id="nsError" role="alert" aria-live="assertive" hidden></div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -1006,11 +1115,11 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=20"></script>
+  <script src="i18n.js?v=21"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
   <script src="health-core.js?v=1"></script>
-  <script src="app.js?v=29"></script>
+  <script src="app.js?v=30"></script>
   <script src="vnc-console.js?v=3"></script>
 </body>
 </html>
