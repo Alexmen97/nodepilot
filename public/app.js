@@ -2362,11 +2362,6 @@ document.querySelectorAll('.modal-backdrop').forEach((m) => {
     });
     return;
   }
-  /* La Console VNC ha il suo ciclo di vita in vnc-console.js (close):
-     qui si evita SOLO il binding generico, il wiring e' nel suo modulo. */
-  if (m.id === 'vncModal') {
-    return;
-  }
   /* modale cambio password: chiusura con cleanup dei campi; bloccata
      durante il submit (changePasswordBusy) */
   if (m.id === 'changePasswordModal') {
@@ -2749,7 +2744,6 @@ document.addEventListener('keydown', (e) => {
   if (!$('snapshotCreateModal').hidden) { e.preventDefault(); closeSnapshotCreateModal(); return; }
   if (detailState.key) return;             /* gestito dal Guest Detail */
   if (!$('shellModal').hidden) return;     /* la Shell non si chiude con ESC */
-  if (!$('vncModal').hidden) return;       /* la Console non si chiude con ESC */
   if (!$('changePasswordModal').hidden) {  /* durante il submit ESC non fa nulla */
     if (changePasswordBusy) return;
     closeChangePasswordModal();

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>NodePilot · Console QEMU</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      flex-direction: column;
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: #0a0e1a;
+      color: #e8ecf5;
+      overflow: hidden;
+    }
+    header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 16px;
+      padding-top: calc(10px + env(safe-area-inset-top));
+      background: rgba(13, 20, 40, 0.97);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .brand {
+      font-weight: 700;
+      font-size: 14px;
+      background: linear-gradient(90deg, #2f6bff, #7c3aff);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      white-space: nowrap;
+    }
+    .title {
+      flex: 1;
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status {
+      flex-shrink: 0;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      white-space: nowrap;
+    }
+    .status.connecting { color: #f5b041; }
+    .status.ok { color: #2ecc71; }
+    .status.err { color: #e74c3c; }
+    .actions { display: flex; gap: 8px; flex-shrink: 0; }
+    button {
+      padding: 6px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      color: inherit;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+    button:hover { background: rgba(255, 255, 255, 0.12); }
+    button:focus-visible { outline: 2px solid #2f6bff; outline-offset: 2px; }
+    #vncContainer {
+      flex: 1;
+      min-height: 0;
+      background: #000;
+    }
+    @media (max-width: 640px) {
+      header { gap: 8px; padding: 8px 10px; padding-top: calc(8px + env(safe-area-inset-top)); }
+      .brand { display: none; }
+      button { padding: 6px 10px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">NodePilot</div>
+    <div class="title" id="vncTitle">QEMU <span id="vncVmid"></span></div>
+    <div class="status" id="vncStatus">…</div>
+    <div class="actions">
+      <button type="button" id="btnReconnect" title="Riconnetti">↻</button>
+      <button type="button" id="btnFullscreen" title="Schermo intero">⛶</button>
+      <button type="button" id="btnClose" title="Chiudi">✕</button>
+    </div>
+  </header>
+  <main id="vncContainer"></main>
+  <script src="i18n.js?v=20"></script>
+  <script src="vnc-window.js?v=1"></script>
+</body>
+</html>

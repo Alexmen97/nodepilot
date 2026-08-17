@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=19">
+  <link rel="stylesheet" href="style.css?v=20">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -991,25 +991,6 @@
     </div>
   </div>
 
-  <div class="modal-backdrop vnc-backdrop" id="vncModal" hidden>
-    <div class="modal glass vnc-modal">
-      <div class="modal-head vnc-head">
-        <h2 id="vncTitle">Monitor Console</h2>
-        <div class="vnc-head-actions">
-          <button class="icon-btn" id="btnVncFullscreen" title="Schermo intero">⛶</button>
-          <button class="icon-btn" data-close title="Chiudi">✕</button>
-        </div>
-      </div>
-      <div class="vnc-body">
-        <div class="vnc-status" id="vncStatus">
-          <span id="vncStatusText"></span>
-          <button type="button" class="ghost-btn vnc-reconnect" id="btnVncReconnect" hidden data-i18n="vnc.reconnect">Riconnetti</button>
-        </div>
-        <div id="vncScreen" class="vnc-screen"></div>
-      </div>
-    </div>
-  </div>
-
   <div class="tour-backdrop" id="tourBackdrop" hidden>
     <div class="tour-spotlight" id="tourSpotlight"></div>
     <div class="tour-card glass" id="tourCard">
@@ -1025,10 +1006,10 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=19"></script>
+  <script src="i18n.js?v=20"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
-  <script src="app.js?v=28"></script>
-  <script src="vnc-console.js?v=2"></script>
+  <script src="app.js?v=29"></script>
+  <script src="vnc-console.js?v=3"></script>
 </body>
 </html>

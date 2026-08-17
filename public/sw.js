@@ -1,9 +1,11 @@
 'use strict';
 
-const CACHE = 'nodepilot-v9';
+const CACHE = 'nodepilot-v10';
 const STATIC = [
   '/',
   '/index.html',
+  '/vnc-window.html',
+  '/vnc-window.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
