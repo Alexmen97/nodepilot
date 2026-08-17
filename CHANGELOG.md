@@ -6,6 +6,33 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.2.3 - 2026-08-17
+
+Status: **Stable**
+
+### Aggiunte
+
+- nuova finestra dedicata per la console QEMU VNC, separata dalla dashboard e
+  autenticata tramite la sessione NodePilot esistente;
+- lifecycle VNC dedicato con reconnect, fullscreen e cleanup della sessione
+  direttamente nella nuova pagina console.
+
+### Modificate
+
+- la console QEMU VNC non viene più aperta in una modale embedded nella
+  dashboard: il pulsante Console apre ora una finestra/tab dedicata
+  same-origin;
+- il nuovo layout dedicato elimina le interferenze del precedente contesto
+  modale e ripristina il corretto comportamento del mouse sulle VM Windows,
+  inclusi movimento, coordinate, click, drag e scroll;
+- apertura console tramite `window.open()` sincrono con gestione del popup
+  blocker e finestra identificata per server/nodo/VM;
+- il flusso di sicurezza resta invariato: la nuova finestra verifica la
+  sessione, crea autonomamente un nuovo prep VNC e mantiene ticket e
+  credenziali temporanee solo in memoria;
+- cache PWA aggiornata a `nodepilot-v10`, con i nuovi asset
+  `vnc-window.html` e `vnc-window.js`.
+
 ## 1.2.2 - 2026-08-17
 
 Status: **Stable**
