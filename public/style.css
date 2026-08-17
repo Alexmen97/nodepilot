@@ -88,14 +88,33 @@
 }
 
 .theme-light .guest-actions button:hover {
-  color: #fff;
-  background: rgba(47, 107, 255, 0.75);
-  border-color: rgba(47, 107, 255, 0.8);
+  color: var(--accent);
+  background: rgba(47, 107, 255, 0.12);
+  border-color: rgba(47, 107, 255, 0.5);
+  box-shadow: 0 3px 12px rgba(47, 107, 255, 0.18);
 }
 
 .theme-light .guest-actions button.danger:hover {
-  background: rgba(224, 74, 90, 0.8);
-  border-color: rgba(224, 74, 90, 0.9);
+  color: var(--red);
+  background: rgba(224, 74, 90, 0.1);
+  border-color: rgba(224, 74, 90, 0.5);
+  box-shadow: 0 3px 12px rgba(224, 74, 90, 0.16);
+}
+
+.theme-light .guest-actions button.shell-btn:hover {
+  color: var(--accent-3);
+  background: rgba(0, 153, 204, 0.1);
+  border-color: rgba(0, 153, 204, 0.5);
+  box-shadow: 0 3px 12px rgba(0, 153, 204, 0.16);
+}
+
+.theme-light .guest-actions button:disabled,
+.theme-light .guest-actions button:disabled:hover,
+.theme-light .guest-actions button:disabled:active {
+  background: rgba(26, 35, 64, 0.05);
+  border-color: rgba(26, 35, 64, 0.1);
+  color: var(--text-dim);
+  box-shadow: none;
 }
 
 .theme-light .server-form input[type="text"],
@@ -858,15 +877,22 @@ body {
 
 /* ---------- shell LXC ---------- */
 
-.shell-btn {
+.guest-actions button.shell-btn {
   border-color: rgba(0, 212, 255, 0.35);
   color: var(--accent-3);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.shell-btn:disabled {
+.guest-actions button.shell-btn:disabled,
+.guest-actions button.shell-btn:disabled:hover,
+.guest-actions button.shell-btn:disabled:active {
   opacity: 0.4;
   cursor: not-allowed;
+  color: var(--accent-3);
+  border-color: rgba(0, 212, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: none;
+  transform: none;
 }
 
 .shell-backdrop {
@@ -1691,14 +1717,48 @@ main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-dim);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s, transform 0.15s;
 }
 
-.guest-actions button:hover { color: #fff; background: rgba(79, 140, 255, 0.2); border-color: rgba(79, 140, 255, 0.4); transform: translateY(-1px); }
-.guest-actions button.danger:hover { background: rgba(255, 93, 108, 0.2); border-color: rgba(255, 93, 108, 0.4); }
+.guest-actions button:hover {
+  color: #fff;
+  background: rgba(79, 140, 255, 0.18);
+  border-color: rgba(79, 140, 255, 0.55);
+  box-shadow: 0 3px 12px rgba(79, 140, 255, 0.22);
+}
+.guest-actions button.danger:hover {
+  color: #fff;
+  background: rgba(255, 93, 108, 0.18);
+  border-color: rgba(255, 93, 108, 0.55);
+  box-shadow: 0 3px 12px rgba(255, 93, 108, 0.22);
+}
+.guest-actions button.shell-btn:hover {
+  color: var(--accent-3);
+  background: rgba(0, 212, 255, 0.14);
+  border-color: rgba(0, 212, 255, 0.55);
+  box-shadow: 0 3px 12px rgba(0, 212, 255, 0.2);
+}
 .guest-actions button:active { transform: scale(0.94); }
 
-.guest-actions button:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+.guest-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.guest-actions button.danger:focus-visible { outline-color: var(--red); }
+.guest-actions button.shell-btn:focus-visible { outline-color: var(--accent-3); }
+
+.guest-actions button:disabled,
+.guest-actions button:disabled:hover,
+.guest-actions button:disabled:active {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+}
+.guest-actions button:disabled:focus-visible { outline: none; }
 
 /* ---------- skeleton ---------- */
 
@@ -1784,6 +1844,11 @@ main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32
 }
 
 .modal.small { max-width: 420px; }
+
+/* Settings V2: pannello piu' largo per la sidebar */
+#settingsModal .modal {
+  max-width: min(860px, calc(100vw - 32px));
+}
 
 @keyframes modalIn {
   from { transform: translateY(40px) scale(0.94); opacity: 0; }
@@ -2810,15 +2875,6 @@ details.health-sub[open] > .health-sub-summary .health-sub-caret { transform: ro
   word-break: break-word;
 }
 
-/* ---------- Health V2: soglie in Impostazioni ---------- */
-
-.health-settings-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 4px;
-}
-
 .num-input {
   width: 76px;
   padding: 6px 10px;
@@ -3267,6 +3323,163 @@ details.health-sub[open] > .health-sub-summary .health-sub-caret { transform: ro
   width: 100%; margin-top: 8px;
   padding: 9px 12px; border-radius: 10px; font-size: 13px;
   border: 1px solid var(--glass-border); background: var(--glass); color: var(--text);
+}
+
+/* ---------- Settings V2: layout sidebar + pannelli ---------- */
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 0;
+}
+
+.settings-nav-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.settings-nav-btn:hover {
+  color: var(--text);
+  background: rgba(79, 140, 255, 0.08);
+  border-color: rgba(79, 140, 255, 0.2);
+}
+
+.settings-nav-btn.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+
+.settings-nav-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-content {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+}
+
+.settings-pane {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.settings-pane[hidden] { display: none; }
+
+.settings-card {
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+}
+
+.settings-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.settings-card > .toggle-row + .toggle-row { margin-top: 10px; }
+.settings-card > .toggle-row + .text-input { margin-top: 10px; }
+.settings-card > .text-input + .form-actions { margin-top: 10px; }
+.settings-card > .form-actions + .toggle-row { margin-top: 12px; }
+.settings-toggle-only { justify-content: flex-end; }
+
+/* card soglie Monitoraggio */
+.health-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.health-settings-card {
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+}
+
+.health-settings-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.health-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.health-settings-row + .health-settings-row { margin-top: 8px; }
+
+.health-settings-row-label {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+/* mobile: sidebar diventa tabs orizzontali scrollabili */
+@media (max-width: 760px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .settings-nav {
+    flex-direction: row;
+    position: static;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    padding-bottom: 2px;
+  }
+  .settings-nav::-webkit-scrollbar { display: none; }
+  .settings-nav-btn {
+    flex: 0 0 auto;
+    width: auto;
+    white-space: nowrap;
+    text-align: center;
+    padding: 8px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--glass-border);
+    background: var(--glass);
+  }
+  .settings-nav-btn.active {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-color: transparent;
+  }
 }
 .text-input:focus-visible { outline: 2px solid var(--accent-3); outline-offset: 1px; }
 

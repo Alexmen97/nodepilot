@@ -472,14 +472,6 @@ function applyLanguage() {
   sel.innerHTML = '<option value="all">' + t('logs.all') + '</option>' +
     (state.config.servers || []).map((s) => '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>').join('');
   sel.value = current;
-  /* sezioni impostazioni */
-  const fields = $('settingsModal').querySelectorAll('.modal-body > .field');
-  if (fields[0]) fields[0].querySelector('label').textContent = t('settings.appearance');
-  if (fields[1]) fields[1].querySelector('label').textContent = t('settings.language');
-  if (fields[2]) fields[2].querySelector('label').textContent = t('settings.tour');
-  if (fields[2]) fields[2].querySelector('.toggle-row span').textContent = t('settings.tour.label');
-  if (fields[2]) fields[2].querySelector('#btnRestartTour').textContent = t('settings.tour.restart');
-  if (fields[2]) fields[2].querySelector('.hint').textContent = t('settings.tour.hint');
   /* segmented control */
   const seg = $('themeSegmented');
   seg.querySelector('[data-theme="light"]').textContent = t('settings.theme.light');
@@ -2748,8 +2740,24 @@ document.addEventListener('click', (e) => {
 
 /* ---------- init ---------- */
 
+/* Settings V2: navigazione sezioni (sidebar desktop / tabs mobile) */
+function settingsShowTab(name) {
+  const modal = $('settingsModal');
+  modal.querySelectorAll('.settings-nav-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.settingsTab === name);
+  });
+  modal.querySelectorAll('.settings-pane').forEach((p) => {
+    p.hidden = p.dataset.settingsPane !== name;
+  });
+}
+
+document.querySelectorAll('.settings-nav-btn').forEach((b) => {
+  b.addEventListener('click', () => settingsShowTab(b.dataset.settingsTab));
+});
+
 $('btnSettings').onclick = () => {
   $('settingsModal').hidden = false;
+  settingsShowTab('general');
   loadConfig();
 };
 
@@ -2937,7 +2945,7 @@ const tourSteps = [
   },
   {
     view: 'dashboard',
-    before: tourOpenSettings,
+    before: () => tourOpenSettingsTab('general'),
     titleKey: 'tour.13.title',
     target: '#themeSegmented',
     delay: 500,
@@ -2945,6 +2953,7 @@ const tourSteps = [
   },
   {
     view: 'dashboard',
+    before: () => tourOpenSettingsTab('security'),
     titleKey: 'tour.14.title',
     target: '#btnLogout',
     textKey: 'tour.14.text',
@@ -3007,9 +3016,10 @@ function tourCloseGuestDetail() {
   if (detailState.key) closeGuestDetail();
 }
 
-function tourOpenSettings() {
+function tourOpenSettingsTab(tab) {
   tourOpenedSettings = true;
   $('settingsModal').hidden = false;
+  if (tab) settingsShowTab(tab);
 }
 
 function spotlight(el) {

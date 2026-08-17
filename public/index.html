@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=21">
+  <link rel="stylesheet" href="style.css?v=22">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -632,171 +632,191 @@
         <h2>Impostazioni</h2>
         <button class="icon-btn" data-close>✕</button>
       </div>
-      <div class="modal-body">
-        <div class="field">
-          <label>ASPETTO</label>
-          <div class="segmented" id="themeSegmented" role="group" aria-label="Tema">
-            <button type="button" data-theme="light" title="Chiaro">☀️ Chiaro</button>
-            <button type="button" data-theme="dark" title="Scuro">🌙 Scuro</button>
-            <button type="button" data-theme="system" title="Sistema">💻 Sistema</button>
-          </div>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="Impostazioni">
+          <button type="button" class="settings-nav-btn active" data-settings-tab="general" data-i18n="settings.nav.general">Generale</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="security" data-i18n="settings.nav.security">Sicurezza</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="monitoring" data-i18n="settings.nav.monitoring">Monitoraggio</button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="notifications" data-i18n="settings.nav.notifications">Notifiche</button>
+        </nav>
+        <div class="settings-content">
+          <section class="settings-pane" data-settings-pane="general">
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="settings.appearance">ASPETTO</h3>
+              <div class="segmented" id="themeSegmented" role="group" aria-label="Tema">
+                <button type="button" data-theme="light" title="Chiaro">☀️ Chiaro</button>
+                <button type="button" data-theme="dark" title="Scuro">🌙 Scuro</button>
+                <button type="button" data-theme="system" title="Sistema">💻 Sistema</button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="settings.language">LINGUA</h3>
+              <div class="toggle-row">
+                <span data-i18n="settings.language.label">Lingua dell'interfaccia</span>
+                <select id="languageSelect" class="select-input">
+                  <option value="it">🇮🇹 Italiano</option>
+                  <option value="en">🇬🇧 English</option>
+                </select>
+              </div>
+            </div>
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="settings.tour">TOUR GUIDATO</h3>
+              <div class="toggle-row">
+                <span data-i18n="settings.tour.label">Rivedi il tour guidato</span>
+                <button type="button" class="ghost-btn" id="btnRestartTour" data-i18n="settings.tour.restart">Riavvia tour</button>
+              </div>
+              <p class="hint" data-i18n="settings.tour.hint">Il tour mostra le funzionalità sui tuoi dati reali, senza modificare nulla.</p>
+              <span class="tour-new-badge" id="tourNewBadge" data-i18n="tour.newFeatures" hidden>Nuove funzionalità disponibili</span>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="security" hidden>
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="settings.security">SICUREZZA</h3>
+              <div class="toggle-row">
+                <span data-i18n="settings.security.label">Password della dashboard</span>
+                <button type="button" class="ghost-btn" id="btnChangePassword" data-i18n="settings.security.btn">Cambia password</button>
+              </div>
+              <p class="hint" data-i18n="settings.security.hint">Dopo il cambio dovrai accedere di nuovo.</p>
+            </div>
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="auth.session">Sessione</h3>
+              <div class="toggle-row">
+                <span id="sessionUser">Utente: —</span>
+                <button type="button" class="ghost-btn" id="btnLogout" data-i18n="auth.logoutBtn">Esci</button>
+              </div>
+              <p class="hint" data-i18n="session.info">Sessione: 12 ore di inattività / massimo 7 giorni</p>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="monitoring" hidden>
+            <p class="hint" data-i18n="settings.health.hint">Soglie per gli avvisi del Monitoraggio (Health Center). Il valore di avviso deve essere inferiore a quello critico.</p>
+            <div class="health-settings-grid">
+              <div class="health-settings-card">
+                <h4 class="health-settings-card-title" data-i18n="settings.health.storage.title">Storage</h4>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.storage.warning">Soglia avviso (%)</span>
+                  <input type="number" id="hsStorageWarning" class="num-input" min="1" max="99" step="1" inputmode="numeric">
+                </div>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.storage.critical">Soglia critica (%)</span>
+                  <input type="number" id="hsStorageCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
+                </div>
+              </div>
+              <div class="health-settings-card">
+                <h4 class="health-settings-card-title" data-i18n="settings.health.backup.title">Backup</h4>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.backup.warning">Avviso dopo (giorni)</span>
+                  <input type="number" id="hsBackupWarning" class="num-input" min="1" max="365" step="1" inputmode="numeric">
+                </div>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.backup.critical">Critico dopo (giorni)</span>
+                  <input type="number" id="hsBackupCritical" class="num-input" min="2" max="365" step="1" inputmode="numeric">
+                </div>
+              </div>
+              <div class="health-settings-card">
+                <h4 class="health-settings-card-title" data-i18n="settings.health.swap.title">Swap</h4>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.swap.warning">Soglia avviso (%)</span>
+                  <input type="number" id="hsSwapWarning" class="num-input" min="1" max="99" step="1" inputmode="numeric">
+                </div>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.swap.critical">Soglia critica (%)</span>
+                  <input type="number" id="hsSwapCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
+                </div>
+              </div>
+              <div class="health-settings-card">
+                <h4 class="health-settings-card-title" data-i18n="settings.health.disk.title">Dischi</h4>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.disk.temp.warning">Temperatura avviso (°C)</span>
+                  <input type="number" id="hsDiskTempWarning" class="num-input" min="20" max="90" step="1" inputmode="numeric">
+                </div>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.disk.temp.critical">Temperatura critica (°C)</span>
+                  <input type="number" id="hsDiskTempCritical" class="num-input" min="21" max="95" step="1" inputmode="numeric">
+                </div>
+                <div class="health-settings-row">
+                  <span class="health-settings-row-label" data-i18n="settings.health.disk.wear.warning">Vita residua avviso (%)</span>
+                  <input type="number" id="hsDiskWearWarning" class="num-input" min="6" max="100" step="1" inputmode="numeric">
+                </div>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="ghost-btn" id="btnHealthReset" data-i18n="settings.health.reset">Ripristina default</button>
+              <button type="button" class="primary-btn" id="btnHealthSave" data-i18n="settings.health.save">Salva soglie</button>
+            </div>
+            <div class="auth-error" id="hsError" role="alert" aria-live="assertive" hidden></div>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="notifications" hidden>
+            <p class="hint" data-i18n="settings.notifications.hint">Il Notification Center raccoglie gli eventi rilevati dal backend. Telegram è un canale di consegna indipendente, attivo anche con il browser chiuso.</p>
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="settings.notifications.center">Notification Center</h3>
+              <div class="toggle-row settings-toggle-only">
+                <button type="button" class="toggle" id="notifCenterToggle" role="switch" aria-checked="true" aria-label="Notification Center">
+                  <span class="toggle-thumb"></span>
+                </button>
+              </div>
+            </div>
+            <div class="settings-card">
+              <h3 class="settings-card-title" data-i18n="settings.notifications.telegram">TELEGRAM</h3>
+              <div class="toggle-row">
+                <span data-i18n="settings.notifications.telegramEnabled">Telegram attivo</span>
+                <button type="button" class="toggle" id="tgEnabledToggle" role="switch" aria-checked="false" aria-label="Telegram attivo">
+                  <span class="toggle-thumb"></span>
+                </button>
+              </div>
+              <div class="toggle-row">
+                <span data-i18n="settings.notifications.token">Bot Token</span>
+                <span class="notif-configured" id="tgConfigured" hidden data-i18n="settings.notifications.configured">Configurato</span>
+              </div>
+              <input type="password" id="tgBotToken" class="text-input" autocomplete="new-password"
+                placeholder="Lascia vuoto per mantenere il token attuale">
+              <div class="form-actions">
+                <button type="button" class="ghost-btn" id="btnTgRemoveToken" data-i18n="settings.notifications.removeToken">Rimuovi token</button>
+              </div>
+              <div class="toggle-row">
+                <span data-i18n="settings.notifications.chatId">Chat ID</span>
+                <input type="text" id="tgChatId" class="text-input notif-input" autocomplete="off" placeholder="123456789 o @canale">
+              </div>
+              <div class="toggle-row">
+                <span data-i18n="settings.notifications.language">Lingua messaggi Telegram</span>
+                <select id="tgLanguage" class="select-input">
+                  <option value="it">🇮🇹 Italiano</option>
+                  <option value="en">🇬🇧 English</option>
+                </select>
+              </div>
+              <h4 class="settings-subtitle" data-i18n="settings.notifications.events">EVENTI</h4>
+              <div class="notif-events-grid">
+                <div class="toggle-row">
+                  <span data-i18n="settings.notifications.critical">Critical</span>
+                  <button type="button" class="toggle" id="tgEvCritical" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+                </div>
+                <div class="toggle-row">
+                  <span data-i18n="settings.notifications.warning">Warning</span>
+                  <button type="button" class="toggle" id="tgEvWarning" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+                </div>
+                <div class="toggle-row">
+                  <span data-i18n="settings.notifications.success">Success</span>
+                  <button type="button" class="toggle" id="tgEvSuccess" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+                </div>
+                <div class="toggle-row">
+                  <span data-i18n="settings.notifications.info">Info</span>
+                  <button type="button" class="toggle" id="tgEvInfo" role="switch" aria-checked="false"><span class="toggle-thumb"></span></button>
+                </div>
+                <div class="toggle-row">
+                  <span data-i18n="settings.notifications.recovery">Recovery</span>
+                  <button type="button" class="toggle" id="tgEvRecovery" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
+                </div>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="ghost-btn" id="btnTgTest" data-i18n="settings.notifications.test">Invia notifica di prova</button>
+              <button type="button" class="primary-btn" id="btnNotifSave" data-i18n="settings.notifications.save">Salva notifiche</button>
+            </div>
+            <div class="auth-error" id="nsError" role="alert" aria-live="assertive" hidden></div>
+          </section>
         </div>
-
-        <div class="field">
-          <label>LINGUA</label>
-          <div class="toggle-row">
-            <span>Lingua dell'interfaccia</span>
-            <select id="languageSelect" class="select-input">
-              <option value="it">🇮🇹 Italiano</option>
-              <option value="en">🇬🇧 English</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="field">
-          <label>Tour guidato</label>
-          <div class="toggle-row">
-            <span data-i18n="settings.tour.label">Rivedi il tour guidato</span>
-            <button type="button" class="ghost-btn" id="btnRestartTour">Riavvia tour</button>
-          </div>
-          <p class="hint" data-i18n="settings.tour.hint">Il tour mostra le funzionalità sui tuoi dati reali, senza modificare nulla.</p>
-          <span class="tour-new-badge" id="tourNewBadge" data-i18n="tour.newFeatures" hidden>Nuove funzionalità disponibili</span>
-        </div>
-
-        <div class="field">
-          <label data-i18n="settings.security">SICUREZZA</label>
-          <div class="toggle-row">
-            <span data-i18n="settings.security.label">Password della dashboard</span>
-            <button type="button" class="ghost-btn" id="btnChangePassword" data-i18n="settings.security.btn">Cambia password</button>
-          </div>
-          <p class="hint" data-i18n="settings.security.hint">Dopo il cambio dovrai accedere di nuovo.</p>
-        </div>
-
-        <div class="field">
-          <label data-i18n="auth.session">Sessione</label>
-          <div class="toggle-row">
-            <span id="sessionUser">Utente: —</span>
-            <button type="button" class="ghost-btn" id="btnLogout" data-i18n="auth.logoutBtn">Esci</button>
-          </div>
-          <p class="hint" data-i18n="session.info">Sessione: 12 ore di inattività / massimo 7 giorni</p>
-        </div>
-
-        <div class="field">
-          <label data-i18n="settings.health.title">MONITORAGGIO</label>
-          <p class="hint" data-i18n="settings.health.hint">Soglie per gli avvisi del Monitoraggio (Health Center). Il valore di avviso deve essere inferiore a quello critico.</p>
-          <div class="health-settings-grid">
-            <div class="toggle-row">
-              <span data-i18n="settings.health.storage.warning">Storage: soglia avviso (%)</span>
-              <input type="number" id="hsStorageWarning" class="num-input" min="1" max="99" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.storage.critical">Storage: soglia critica (%)</span>
-              <input type="number" id="hsStorageCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.backup.warning">Backup: avviso dopo (giorni)</span>
-              <input type="number" id="hsBackupWarning" class="num-input" min="1" max="365" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.backup.critical">Backup: critico dopo (giorni)</span>
-              <input type="number" id="hsBackupCritical" class="num-input" min="2" max="365" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.swap.warning">Swap: soglia avviso (%)</span>
-              <input type="number" id="hsSwapWarning" class="num-input" min="1" max="99" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.swap.critical">Swap: soglia critica (%)</span>
-              <input type="number" id="hsSwapCritical" class="num-input" min="2" max="100" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.disk.temp.warning">Dischi: temperatura avviso (°C)</span>
-              <input type="number" id="hsDiskTempWarning" class="num-input" min="20" max="90" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.disk.temp.critical">Dischi: temperatura critica (°C)</span>
-              <input type="number" id="hsDiskTempCritical" class="num-input" min="21" max="95" step="1" inputmode="numeric">
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.health.disk.wear.warning">Dischi: vita residua avviso (%)</span>
-              <input type="number" id="hsDiskWearWarning" class="num-input" min="6" max="100" step="1" inputmode="numeric">
-            </div>
-          </div>
-          <div class="form-actions">
-            <button type="button" class="ghost-btn" id="btnHealthReset" data-i18n="settings.health.reset">Ripristina default</button>
-            <button type="button" class="primary-btn" id="btnHealthSave" data-i18n="settings.health.save">Salva</button>
-          </div>
-          <div class="auth-error" id="hsError" role="alert" aria-live="assertive" hidden></div>
-        </div>
-
-        <div class="field">
-          <label data-i18n="settings.notifications.title">NOTIFICHE</label>
-          <p class="hint" data-i18n="settings.notifications.hint">Il Notification Center raccoglie gli eventi rilevati dal backend. Telegram è un canale di consegna indipendente, attivo anche con il browser chiuso.</p>
-
-          <div class="toggle-row">
-            <span data-i18n="settings.notifications.center">Notification Center</span>
-            <button type="button" class="toggle" id="notifCenterToggle" role="switch" aria-checked="true" aria-label="Notification Center">
-              <span class="toggle-thumb"></span>
-            </button>
-          </div>
-
-          <label class="settings-subtitle" data-i18n="settings.notifications.telegram">TELEGRAM</label>
-          <div class="toggle-row">
-            <span data-i18n="settings.notifications.telegramEnabled">Telegram attivo</span>
-            <button type="button" class="toggle" id="tgEnabledToggle" role="switch" aria-checked="false" aria-label="Telegram attivo">
-              <span class="toggle-thumb"></span>
-            </button>
-          </div>
-          <div class="toggle-row">
-            <span data-i18n="settings.notifications.token">Bot Token</span>
-            <span class="notif-configured" id="tgConfigured" hidden data-i18n="settings.notifications.configured">Configurato</span>
-          </div>
-          <input type="password" id="tgBotToken" class="text-input" autocomplete="new-password"
-            placeholder="Lascia vuoto per mantenere il token attuale">
-          <div class="form-actions">
-            <button type="button" class="ghost-btn" id="btnTgRemoveToken" data-i18n="settings.notifications.removeToken">Rimuovi token</button>
-          </div>
-          <div class="toggle-row">
-            <span data-i18n="settings.notifications.chatId">Chat ID</span>
-            <input type="text" id="tgChatId" class="text-input notif-input" autocomplete="off" placeholder="123456789 o @canale">
-          </div>
-          <div class="toggle-row">
-            <span data-i18n="settings.notifications.language">Lingua messaggi Telegram</span>
-            <select id="tgLanguage" class="select-input">
-              <option value="it">🇮🇹 Italiano</option>
-              <option value="en">🇬🇧 English</option>
-            </select>
-          </div>
-          <label class="settings-subtitle" data-i18n="settings.notifications.events">EVENTI</label>
-          <div class="notif-events-grid">
-            <div class="toggle-row">
-              <span data-i18n="settings.notifications.critical">Critical</span>
-              <button type="button" class="toggle" id="tgEvCritical" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.notifications.warning">Warning</span>
-              <button type="button" class="toggle" id="tgEvWarning" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.notifications.success">Success</span>
-              <button type="button" class="toggle" id="tgEvSuccess" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.notifications.info">Info</span>
-              <button type="button" class="toggle" id="tgEvInfo" role="switch" aria-checked="false"><span class="toggle-thumb"></span></button>
-            </div>
-            <div class="toggle-row">
-              <span data-i18n="settings.notifications.recovery">Recovery</span>
-              <button type="button" class="toggle" id="tgEvRecovery" role="switch" aria-checked="true"><span class="toggle-thumb"></span></button>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button type="button" class="ghost-btn" id="btnTgTest" data-i18n="settings.notifications.test">Invia notifica di prova</button>
-            <button type="button" class="primary-btn" id="btnNotifSave" data-i18n="settings.notifications.save">Salva</button>
-          </div>
-          <div class="auth-error" id="nsError" role="alert" aria-live="assertive" hidden></div>
-        </div>
-
       </div>
     </div>
   </div>
@@ -1115,11 +1135,11 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=21"></script>
+  <script src="i18n.js?v=22"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
   <script src="health-core.js?v=1"></script>
-  <script src="app.js?v=30"></script>
+  <script src="app.js?v=31"></script>
   <script src="vnc-console.js?v=3"></script>
 </body>
 </html>
