@@ -6,6 +6,31 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.2.2 - 2026-08-17
+
+Status: **Stable**
+
+### Aggiunte
+
+- gestione ordinata dei segnali di terminazione (`SIGTERM` e `SIGINT`) nel
+  backend con chiusura pulita del server HTTP, terminazione controllata delle
+  sessioni WebSocket (VNC e Shell) con codice 1001, chiusura degli upstream
+  Proxmox associati e timeout di sicurezza a 5 secondi;
+- stili di focus migliorati (`:focus-visible`) sui controlli interattivi,
+  pulsanti di navigazione, tab e azioni modali per una migliore accessibilità
+  da tastiera.
+
+### Modificate
+
+- console QEMU VNC e terminale Shell LXC: ottimizzazione del layout mobile
+  con adozione di `100dvw` e `100dvh` (con fallback `100vw`/`100vh`) per
+  prevenire overflow verticali e problemi di visualizzazione con le barre
+  di navigazione dinamiche dei browser mobile;
+- incapsulamento del recupero metadati versione frontend in `fetchAppVersion()`
+  con gestione resiliente e senza retry automatici;
+- cache PWA aggiornata a `nodepilot-v9` e asset query incrementate
+  (`style.css?v=19`, `app.js?v=28`).
+
 ## 1.2.1 - 2026-08-17
 
 Status: **Stable**
