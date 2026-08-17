@@ -81,6 +81,8 @@ offered; the tour can be skipped or restarted any time from
 - **Local authentication** — username/password login, HttpOnly session cookie, rate limiting, protected API and Shell WebSocket
 - **Change password** — update the dashboard password from Settings; all sessions are invalidated and a new sign-in is required
 - **Guided tour V2** — 15 steps over real data, no automatic demo
+- **Notification Center** — persistent notification history with unread badge, filters, read/unread, delete and clear
+- **Telegram notifications 24/7** — backend watchdog delivers alerts (server/node offline, storage, ZFS, cluster/HA, failed tasks, backup age, SMART on-demand) to Telegram even with the browser completely closed; configure from Settings → Notifications
 - **Theme** light/dark/system, **Italian/English UI**, responsive mobile/desktop layout
 
 ## Screenshots

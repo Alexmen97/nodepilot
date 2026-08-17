@@ -6,6 +6,44 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.3.0 - 2026-08-17
+
+Status: **Stable**
+
+### Aggiunte
+
+- Notification Center integrato con campanella, badge unread, cronologia
+  persistente, filtri, read/unread, eliminazione e svuotamento;
+- Alert Engine backend 24/7 con watchdog indipendente dal browser;
+- persistenza atomica dello stato alert e delle notifiche;
+- notifiche Telegram backend-only con configurazione sicura,
+  test integrato e delivery status;
+- recovery notifications ed escalation senza duplicati;
+- modulo Health condiviso tra frontend e backend per soglie e anti-flap
+  coerenti;
+- monitoraggio backend di server/nodi, storage, ZFS, cluster/HA,
+  task falliti, età backup e task backup/snapshot;
+- supporto SMART notifiche solo on-demand, senza polling automatico.
+
+### Modificate
+
+- Health/alert architecture: il frontend resta responsabile della UI Health,
+  mentre il backend è source of truth per le notifiche 24/7;
+- graceful shutdown ferma il watchdog prima della chiusura HTTP;
+- PWA aggiornata a nodepilot-v11;
+- Settings estese con Notification Center e configurazione Telegram;
+- protezione contro duplicati dopo restart/sleep/wake tramite stato persistito
+  e startup grace.
+
+### Sicurezza
+
+- Bot Token Telegram conservato solo in config.json con permessi 600;
+- token mai restituito dalle API, mai salvato nel browser, nelle notifiche,
+  nei log o nei file di stato;
+- nessun endpoint client può creare alert arbitrari;
+- file notifications.json e alert-state.json esclusi da Git/npm e scritti
+  atomicamente con permessi 600.
+
 ## 1.2.3 - 2026-08-17
 
 Status: **Stable**

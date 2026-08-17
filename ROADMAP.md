@@ -18,6 +18,10 @@ tecnica: i dettagli vivono in docs/ARCHITECTURE.md.
 - [x] Tour V2
 - [x] PWA / responsive / IT-EN
 - [x] NodePilot branding
+- [x] Notification Center (campanella, badge, cronologia, filtri)
+- [x] Alert Engine backend 24/7 (watchdog indipendente dal browser)
+- [x] Telegram notifications backend-only (validato con browser chiuso)
+- [x] PWA nodepilot-v11
 
 ## Next
 

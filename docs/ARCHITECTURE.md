@@ -316,3 +316,38 @@ committed and must stay readable only by the service user.
   not depend on one.
 - Frontend changes require the PWA cache/version bump before testing,
   otherwise a stale service worker can make a patch look unapplied.
+
+## 14. Notification Center & Alert Engine (v1.3.0)
+
+### Moduli
+
+- public/health-core.js — primitive Health condivise (soglie, anti-flap,
+  isteresi) usate sia dal frontend (Health Center UI) sia dal backend
+  (Alert Engine): soglie e comportamento non divergono mai.
+- alert-engine.js — watchdog backend 24/7: tick unico non concorrente
+  (30s, timer unref), fonti con TTL (storage 60s, ZFS 120s, cluster 60s,
+  tasks 60s, backup age 300s), bootstrap silenzioso, startup grace dopo
+  restart/sleep/wake, anti-flap, escalation e recovery senza duplicati.
+- notifications.js — store persistente notifications.json (600, scrittura
+  atomica tmp+rename, retention 200 record / 30 giorni, reconciliation dei
+  delivery pending in failed/interrupted al restart).
+- telegram.js — delivery backend-only: coda FIFO concorrenza 1, fetch nativo
+  Node, timeout 10s, retry massimo 1 solo per errori transient, formattazione
+  messaggi IT/EN, delivery status pending/sent/failed.
+
+### Pipeline
+
+Proxmox -> Alert Engine (watchdog) -> notifications.json -> Notification Center UI
+                                                       -> Telegram (se abilitato)
+
+Il frontend NON genera eventi: non esiste alcun endpoint di ingestion client.
+SMART resta on-demand (nessun polling automatico, skipsmart=1 invariato).
+
+### File runtime
+
+| File | Contenuto | Permessi |
+| --- | --- | --- |
+| notifications.json | cronologia notifiche | 600 |
+| alert-state.json | stato macchina dell'Alert Engine | 600 |
+
+Entrambi gitignored, esclusi da npm, scritti atomicamente.
