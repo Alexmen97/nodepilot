@@ -6,6 +6,29 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.3.4 - 2026-08-20
+
+Status: **Stable**
+
+### Modificate
+
+- label del dock MENISCUS sempre visibili per tutte le quattro viste;
+- voce attiva evidenziata tramite icona e label con accent color;
+- bead ridotta a circa 34 px con hit area tattile 44×44 px;
+- aggiunto drag orizzontale della bead tramite Pointer Events;
+- drag attivato solo oltre una soglia minima per evitare trascinamenti involontari;
+- candidate state durante il drag esclusivamente visuale, senza cambiare vista
+  o `aria-current`;
+- snap alla voce più vicina al rilascio con animazione breve e controllata;
+- `switchView()` resta l'unica source of truth e viene invocata solo al rilascio
+  quando la vista cambia;
+- supporto `pointercancel` e `lostpointercapture` senza navigazioni accidentali;
+- migliorato il comportamento touch con `touch-action: pan-y` per preservare lo
+  scroll verticale;
+- migliorata coerenza Light/Dark/System del dock MENISCUS;
+- supporto reduced-motion con snap immediato e senza deformazioni dinamiche;
+- cache PWA aggiornata a `nodepilot-v15`.
+
 ## 1.3.3 - 2026-08-20
 
 Status: Stable
