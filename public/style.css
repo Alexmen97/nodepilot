@@ -535,10 +535,16 @@ body {
 
 /* ---------- navigazione principale ---------- */
 
+:root {
+  --nav-dock-height: 238px;
+  --nav-dock-bottom: max(34px, calc(26px + env(safe-area-inset-bottom)));
+  --nav-dock-clearance: max(294px, calc(274px + env(safe-area-inset-bottom)));
+}
+
 .primary-nav {
   position: fixed;
   left: 50%;
-  bottom: max(34px, calc(26px + env(safe-area-inset-bottom)));
+  bottom: var(--nav-dock-bottom);
   z-index: 90;
   width: min(1200px, calc(100vw - 48px));
   transform: translateX(-50%);
@@ -555,7 +561,7 @@ body {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   width: 100%;
-  height: 238px;
+  height: var(--nav-dock-height);
   overflow: hidden;
   isolation: isolate;
   border: 1px solid var(--primary-nav-border);
@@ -583,7 +589,7 @@ body {
   flex-direction: column;
   align-items: center;
   min-width: 0;
-  min-height: 238px;
+  min-height: var(--nav-dock-height);
   padding: 50px 16px 26px;
   border: 0;
   border-radius: 0;
@@ -678,30 +684,44 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
-@media (max-width: 1100px) {
-  .primary-nav {
-    bottom: max(26px, calc(18px + env(safe-area-inset-bottom)));
-    width: calc(100vw - 36px);
+@media (min-width: 761px) and (max-width: 1100px),
+  (min-width: 1101px) and (max-width: 1200px) and (hover: none) and (pointer: coarse) {
+  :root {
+    --nav-dock-height: 126px;
+    --nav-dock-bottom: max(18px, calc(18px + env(safe-area-inset-bottom)));
+    --nav-dock-clearance: calc(var(--nav-dock-height) + 38px + env(safe-area-inset-bottom));
   }
 
-  .primary-nav-bar { height: 208px; }
-  .primary-nav-item { height: 208px; min-height: 208px; }
+  .primary-nav {
+    width: min(82vw, 900px);
+  }
 
-  .primary-nav-item { padding: 43px 12px 28px; font-size: 20px; }
-  .primary-nav-item svg { width: 50px; height: 50px; }
-  .primary-nav-label { margin-top: 16px; }
-  .primary-nav-indicator { width: 43px; height: 8px; margin-top: 14px; }
-  .primary-nav-item:not(:last-child)::after { top: 40px; bottom: 37px; }
+  .primary-nav-bar { height: var(--nav-dock-height); border-radius: 30px; }
+  .primary-nav-item { height: var(--nav-dock-height); min-height: var(--nav-dock-height); }
+
+  .primary-nav-item {
+    padding: 20px 8px 13px;
+    font-size: clamp(16px, 1.55vw, 18px);
+  }
+  .primary-nav-item svg { width: clamp(36px, 3.3vw, 40px); height: clamp(36px, 3.3vw, 40px); }
+  .primary-nav-label { margin-top: 10px; }
+  .primary-nav-indicator { width: 40px; height: 7px; margin-top: 9px; }
+  .primary-nav-item:not(:last-child)::after { top: 24px; bottom: 24px; }
 }
 
 @media (max-width: 760px) {
+  :root {
+    --nav-dock-height: 132px;
+    --nav-dock-bottom: max(8px, calc(6px + env(safe-area-inset-bottom)));
+    --nav-dock-clearance: max(162px, calc(142px + env(safe-area-inset-bottom)));
+  }
+
   .primary-nav {
-    bottom: max(8px, calc(6px + env(safe-area-inset-bottom)));
     width: calc(100vw - 24px);
   }
 
-  .primary-nav-bar { height: 132px; border-radius: 30px; }
-  .primary-nav-item { height: 132px; min-height: 132px; }
+  .primary-nav-bar { height: var(--nav-dock-height); border-radius: 30px; }
+  .primary-nav-item { height: var(--nav-dock-height); min-height: var(--nav-dock-height); }
 
   .primary-nav-item {
     padding: 26px 5px 17px;
@@ -716,12 +736,14 @@ body {
 }
 
 @media (max-width: 520px) {
+  :root { --nav-dock-height: 120px; }
+
   .primary-nav {
     width: calc(100vw - 16px);
   }
 
-  .primary-nav-bar { height: 120px; border-radius: 27px; }
-  .primary-nav-item { height: 120px; min-height: 120px; }
+  .primary-nav-bar { height: var(--nav-dock-height); border-radius: 27px; }
+  .primary-nav-item { height: var(--nav-dock-height); min-height: var(--nav-dock-height); }
 
   .primary-nav-item { padding: 22px 3px 13px; font-size: clamp(10px, 2.45vw, 13px); }
   .primary-nav-item svg { width: clamp(27px, 6vw, 31px); height: clamp(27px, 6vw, 31px); }
@@ -731,8 +753,10 @@ body {
 }
 
 @media (max-width: 390px) {
-  .primary-nav-bar { height: 122px; border-radius: 26px; }
-  .primary-nav-item { height: 122px; min-height: 122px; }
+  :root { --nav-dock-height: 122px; }
+
+  .primary-nav-bar { height: var(--nav-dock-height); border-radius: 26px; }
+  .primary-nav-item { height: var(--nav-dock-height); min-height: var(--nav-dock-height); }
 
   .primary-nav-item { padding-inline: 2px; font-size: 10px; }
   .primary-nav-label {
@@ -1254,7 +1278,7 @@ body {
 
 /* ---------- layout ---------- */
 
-main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32px max(294px, calc(274px + env(safe-area-inset-bottom))); }
+main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32px var(--nav-dock-clearance); }
 
 /* ---------- badge versione e footer ---------- */
 
@@ -2281,7 +2305,7 @@ main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32
 @media (max-width: 900px) {
   .servers-grid { grid-template-columns: 1fr; }
   .topbar { padding: 14px 18px; }
-  main { padding: 20px 18px max(256px, calc(236px + env(safe-area-inset-bottom))); }
+  main { padding: 20px 18px var(--nav-dock-clearance); }
   .guests { grid-template-columns: 1fr; }
   .section-head { flex-wrap: wrap; gap: 10px; }
   .section-actions { flex-wrap: wrap; gap: 8px; }
@@ -2313,7 +2337,7 @@ main { flex: 1; max-width: 1800px; width: 100%; margin: 0 auto; padding: 28px 32
   .status-chip { order: 6; display: flex; padding: 4px 10px; font-size: 11.5px; gap: 6px; }
   .brand-text p { display: none; }
   .brand-text h1 { font-size: 17px; }
-  main { padding: 16px 14px max(162px, calc(142px + env(safe-area-inset-bottom))); }
+  main { padding: 16px 14px var(--nav-dock-clearance); }
   .stats-row { grid-template-columns: 1fr 1fr; gap: 10px; }
   .stat-card { padding: 14px; gap: 10px; }
   .stat-icon { width: 38px; height: 38px; font-size: 17px; }
