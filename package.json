@@ -1,6 +1,6 @@
 {
   "name": "nodepilot",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Self-hosted Proxmox Infrastructure Dashboard",
   "main": "server.js",
   "author": "Alexmen97",

@@ -6,6 +6,28 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.3.3 - 2026-08-20
+
+Status: Stable
+
+### Modificato
+
+- introdotto il dock di navigazione MENISCUS per le quattro viste principali;
+- spostata la navigazione primaria dalla topbar al nuovo dock flottante;
+- aggiunta una bead animata che segue la vista attiva;
+- aggiunta una superficie SVG a singolo path con menisco/socket dinamico;
+- implementato il movimento della bead con spring animation e deformazione
+  controllata dalla velocità;
+- sincronizzato immediatamente lo stato attivo con la vista selezionata;
+- semplificato il drawer mobile, ora riservato alle utility;
+- migliorata la responsività della navigazione fino a 375 px e aggiunto il
+  supporto safe-area mobile;
+- aggiunto il supporto a `prefers-reduced-motion`, con posizionamento immediato
+  e senza spring animation;
+- migliorata l'accessibilità con landmark `nav`, button nativi e
+  `aria-current`;
+- aggiornata la cache PWA a `nodepilot-v14`.
+
 ## 1.3.2 - 2026-08-20
 
 Status: **Stable**
