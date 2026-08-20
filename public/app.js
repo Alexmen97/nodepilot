@@ -29,6 +29,100 @@ let authChannel = null;
 try { authChannel = new BroadcastChannel('homelab-auth'); } catch (_) { authChannel = null; }
 /* modale cambio password: durante il submit la chiusura e' bloccata */
 let changePasswordBusy = false;
+/* login Flow: stato puramente visuale, il flusso auth resta quello esistente */
+let authLoginBusy = false;
+let authMetaballRafId = null;
+const authReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const AUTH_METABALLS = [
+  { x: 110, y: 90, ax: 2.5, ay: 1.9, speed: 0.00062, phase: 0.0 },
+  { x: 133, y: 99, ax: 3.1, ay: 2.5, speed: 0.00079, phase: 1.7 },
+  { x: 84, y: 77, ax: 2.7, ay: 2.1, speed: 0.00071, phase: 3.4 },
+  { x: 112, y: 58, ax: 2.0, ay: 2.4, speed: 0.00088, phase: 5.1 },
+];
+
+function setAuthSubmitLabel(key) {
+  const label = $('authSubmitLabel');
+  if (label) label.textContent = t(key);
+}
+
+function syncAuthPasswordToggle() {
+  const input = $('authPassword');
+  const button = $('btnAuthShow');
+  if (!input || !button) return;
+  const shown = input.type === 'text';
+  const label = t(shown ? 'auth.hide' : 'auth.show');
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.setAttribute('aria-pressed', String(shown));
+}
+
+function setAuthLoginBusy(busy) {
+  authLoginBusy = busy;
+  const form = $('authForm');
+  const button = $('authSubmit');
+  if (form) form.setAttribute('aria-busy', String(busy));
+  if (button) {
+    button.disabled = busy;
+    button.classList.toggle('is-melting', busy && !authReducedMotion.matches);
+    button.classList.toggle('is-loading', busy);
+  }
+  setAuthSubmitLabel(busy ? 'auth.loading' : 'auth.login');
+}
+
+function clearAuthError() {
+  const el = $('authError');
+  if (!el) return;
+  el.hidden = true;
+  el.textContent = '';
+}
+
+function renderAuthMetaballs(now) {
+  const nodes = document.querySelectorAll('#authMetaballGroup .mb');
+  if (nodes.length !== AUTH_METABALLS.length) return;
+  AUTH_METABALLS.forEach((blob, index) => {
+    const phase = now * blob.speed + blob.phase;
+    const x = blob.x + Math.cos(phase) * blob.ax + Math.sin(phase * 0.73) * 0.7;
+    const y = blob.y + Math.sin(phase * 1.13) * blob.ay + Math.cos(phase * 0.67) * 0.55;
+    nodes[index].setAttribute('transform', 'translate(' + x.toFixed(2) + ' ' + y.toFixed(2) + ')');
+  });
+}
+
+function canAnimateAuthMetaballs() {
+  const backdrop = $('authBackdrop');
+  return !!backdrop && !backdrop.hidden && !document.hidden && !authReducedMotion.matches;
+}
+
+function stopAuthMetaballLoop() {
+  if (authMetaballRafId !== null) cancelAnimationFrame(authMetaballRafId);
+  authMetaballRafId = null;
+}
+
+function authMetaballFrame(now) {
+  authMetaballRafId = null;
+  if (!canAnimateAuthMetaballs()) return;
+  renderAuthMetaballs(now);
+  authMetaballRafId = requestAnimationFrame(authMetaballFrame);
+}
+
+function startAuthMetaballLoop() {
+  if (!canAnimateAuthMetaballs() || authMetaballRafId !== null) return;
+  renderAuthMetaballs(performance.now());
+  authMetaballRafId = requestAnimationFrame(authMetaballFrame);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopAuthMetaballLoop();
+  else startAuthMetaballLoop();
+});
+window.addEventListener('pagehide', stopAuthMetaballLoop);
+window.addEventListener('pageshow', startAuthMetaballLoop);
+const onAuthMotionPreferenceChange = () => {
+  stopAuthMetaballLoop();
+  renderAuthMetaballs(0);
+  startAuthMetaballLoop();
+};
+if (authReducedMotion.addEventListener) authReducedMotion.addEventListener('change', onAuthMotionPreferenceChange);
+else if (authReducedMotion.addListener) authReducedMotion.addListener(onAuthMotionPreferenceChange);
 
 /* wrapper fetch centralizzato: un SOLO flusso 401 -> sessione scaduta */
 const __origFetch = window.fetch;
@@ -67,19 +161,23 @@ function showLogin() {
   authState.authenticated = false;
   authState.user = null;
   statusLoadedOnce = false;
-  const submit = $('authSubmit');
-  if (submit) { submit.disabled = false; submit.textContent = t('auth.login'); }
+  setAuthLoginBusy(false);
   $('subtitle').textContent = t('conn.connecting');
   updateSessionUser();
   $('authBackdrop').hidden = false;
-  $('authError').hidden = true;
+  clearAuthError();
   $('authNotice').hidden = true;
   $('authRetry').hidden = true;
   $('authPassword').value = '';
+  $('authPassword').type = 'password';
+  syncAuthPasswordToggle();
+  renderAuthMetaballs(0);
+  startAuthMetaballLoop();
   try { $('authUsername').focus(); } catch (_) { /* ignora */ }
 }
 
 function hideLogin() {
+  stopAuthMetaballLoop();
   $('authBackdrop').hidden = true;
 }
 
@@ -234,12 +332,11 @@ if (authChannel) {
 
 $('authForm').onsubmit = async (e) => {
   e.preventDefault();
-  const btn = $('authSubmit');
+  if (authLoginBusy) return;
   const username = $('authUsername').value.trim();
   const password = $('authPassword').value;
-  btn.disabled = true;
-  btn.textContent = t('auth.loading');
-  $('authError').hidden = true;
+  setAuthLoginBusy(true);
+  clearAuthError();
   try {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
@@ -253,17 +350,16 @@ $('authForm').onsubmit = async (e) => {
       updateSessionUser();
       authExpiryHandled = false;
       $('authPassword').value = '';
+      setAuthLoginBusy(false);
       hideLogin();
       loadDashboard();
       return;
     }
     showAuthError(mapAuthError(res.status, data));
-    btn.disabled = false;
-    btn.textContent = t('auth.login');
+    setAuthLoginBusy(false);
   } catch (_) {
     showAuthError(t('auth.network'));
-    btn.disabled = false;
-    btn.textContent = t('auth.login');
+    setAuthLoginBusy(false);
   }
 };
 
@@ -271,9 +367,26 @@ $('btnAuthShow').onclick = () => {
   const input = $('authPassword');
   const show = input.type === 'password';
   input.type = show ? 'text' : 'password';
-  $('btnAuthShow').title = t(show ? 'auth.hide' : 'auth.show');
-  $('btnAuthShow').setAttribute('aria-label', t(show ? 'auth.hide' : 'auth.show'));
+  syncAuthPasswordToggle();
 };
+
+/* il login e' una modale: il Tab resta nei controlli autentici visibili */
+$('authBackdrop').addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || $('authBackdrop').hidden) return;
+  const controls = ['authUsername', 'authPassword', 'btnAuthShow', 'authSubmit', 'authRetry']
+    .map($)
+    .filter((el) => el && !el.disabled && !el.hidden);
+  if (!controls.length) return;
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 $('btnLogout').onclick = async () => {
   try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (_) { /* ignora */ }
@@ -430,6 +543,11 @@ function applyLanguage() {
     if (el.classList.contains('drawer-item')) return; /* gestiti sotto con span */
     el.textContent = t(el.dataset.i18n);
   });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  syncAuthPasswordToggle();
+  setAuthSubmitLabel(authLoginBusy ? 'auth.loading' : 'auth.login');
   /* aggiorna i testi statici */
   $('subtitle').textContent = statusLoadedOnce
     ? t('conn.subtitle', { online: lastOnlineCount, total: lastServerCount })
@@ -3290,6 +3408,11 @@ async function fetchAppVersion() {
       if (badge) {
         badge.textContent = 'v' + data.version;
         badge.hidden = false;
+      }
+      const authBadge = $('authVersionBadge');
+      if (authBadge) {
+        authBadge.textContent = 'NodePilot v' + data.version;
+        authBadge.hidden = false;
       }
     }
   } catch (_) {

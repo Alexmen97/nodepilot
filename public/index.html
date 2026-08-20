@@ -14,7 +14,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NodePilot">
   <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="style.css?v=22">
+  <link rel="stylesheet" href="style.css?v=23">
   <script>
     /* applica il tema prima del render per evitare il flash del tema sbagliato */
     (function () {
@@ -586,43 +586,73 @@
 
   <div id="toasts" class="toasts"></div>
 
-  <div class="auth-backdrop" id="authBackdrop" hidden>
-    <div class="auth-card glass" role="dialog" aria-modal="true" aria-labelledby="authTitle">
-      <div class="auth-logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12,3.8 19.1,7.9 19.1,16.1 12,20.2 4.9,16.1 4.9,7.9" opacity="0.95"></polygon>
-          <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle>
-          <g stroke-width="1.1" opacity="0.9">
-            <line x1="12" y1="10.4" x2="12" y2="3.8"></line>
-            <line x1="12" y1="13.6" x2="12" y2="20.2"></line>
-            <line x1="10.4" y1="12" x2="3.8" y2="12"></line>
-            <line x1="13.6" y1="12" x2="20.2" y2="12"></line>
-            <line x1="10.8" y1="10.8" x2="5.1" y2="5.1"></line>
-            <line x1="13.2" y1="13.2" x2="18.9" y2="18.9"></line>
-            <line x1="13.2" y1="10.8" x2="18.9" y2="5.1"></line>
-            <line x1="10.8" y1="13.2" x2="5.1" y2="18.9"></line>
+  <div class="auth-backdrop auth-flow-backdrop" id="authBackdrop" hidden>
+    <div class="auth-flow-ambient" aria-hidden="true"></div>
+    <div class="auth-card auth-flow-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <div class="auth-flow-mark" aria-hidden="true">
+        <svg class="auth-flow-metaballs" viewBox="0 0 220 180" focusable="false">
+          <defs>
+            <radialGradient id="authFlowBlobPrimary" gradientUnits="userSpaceOnUse" cx="91" cy="61" r="142">
+              <stop offset="0" stop-color="#c0f8ff"></stop>
+              <stop offset="0.25" stop-color="#60e2ff"></stop>
+              <stop offset="0.58" stop-color="#0a9ff5"></stop>
+              <stop offset="0.88" stop-color="#0763dc"></stop>
+              <stop offset="1" stop-color="#0752c4"></stop>
+            </radialGradient>
+            <radialGradient id="authFlowBlobShine" cx="50%" cy="50%" r="50%">
+              <stop offset="0" stop-color="#fff" stop-opacity="0.46"></stop>
+              <stop offset="1" stop-color="#c8f8ff" stop-opacity="0"></stop>
+            </radialGradient>
+            <filter id="authFlowMetaballFilter" x="-55%" y="-55%" width="210%" height="210%" color-interpolation-filters="sRGB">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="authBlur"></feGaussianBlur>
+              <feColorMatrix in="authBlur" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 18 -6" result="authGoo"></feColorMatrix>
+              <feComposite in="SourceGraphic" in2="authGoo" operator="atop"></feComposite>
+            </filter>
+          </defs>
+          <g id="authMetaballGroup" filter="url(#authFlowMetaballFilter)">
+            <g class="mb" transform="translate(110 90)"><ellipse rx="50" ry="45" fill="url(#authFlowBlobPrimary)"></ellipse></g>
+            <g class="mb" transform="translate(133 99)"><ellipse rx="35" ry="29" fill="url(#authFlowBlobPrimary)"></ellipse></g>
+            <g class="mb" transform="translate(84 77)"><ellipse rx="28" ry="30" fill="url(#authFlowBlobPrimary)"></ellipse></g>
+            <g class="mb" transform="translate(112 58)"><ellipse rx="21" ry="18" fill="url(#authFlowBlobPrimary)"></ellipse></g>
           </g>
+          <ellipse class="auth-flow-shine" cx="86" cy="57" rx="20" ry="10" transform="rotate(-24 86 57)" fill="url(#authFlowBlobShine)"></ellipse>
         </svg>
       </div>
-      <h1 class="auth-title" id="authTitle">Node<span>Pilot</span></h1>
-      <p class="auth-subtitle" data-i18n="auth.subtitle">Accedi alla tua dashboard</p>
-      <form id="authForm" class="auth-form">
-        <div class="field">
-          <label for="authUsername" data-i18n="auth.username">Username</label>
-          <input type="text" id="authUsername" autocomplete="username" required>
-        </div>
-        <div class="field">
-          <label for="authPassword" data-i18n="auth.password">Password</label>
-          <div class="auth-password-row">
-            <input type="password" id="authPassword" autocomplete="current-password" required>
-            <button type="button" class="icon-btn auth-show-btn" id="btnAuthShow" title="Mostra password" aria-label="Mostra password">👁</button>
+
+      <header class="auth-flow-header">
+        <h1 class="auth-title auth-flow-title" id="authTitle">Node<span>Pilot</span></h1>
+        <p class="auth-subtitle auth-flow-subtitle" data-i18n="auth.subtitle">Gestione web per Proxmox VE</p>
+      </header>
+
+      <form id="authForm" class="auth-form auth-flow-form" aria-busy="false">
+        <div class="field auth-flow-field">
+          <label class="auth-flow-sr-only" for="authUsername" data-i18n="auth.username">Username</label>
+          <div class="auth-flow-input-wrap">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"></circle><path d="M4.5 20c.9-4 3.3-6 7.5-6s6.6 2 7.5 6"></path></svg>
+            <input type="text" id="authUsername" autocomplete="username" data-i18n-placeholder="auth.username" placeholder="Username" required>
           </div>
         </div>
-        <div class="auth-error" id="authError" role="alert" aria-live="assertive" hidden></div>
-        <div class="auth-notice" id="authNotice" role="status" hidden></div>
-        <button type="submit" class="primary-btn auth-submit" id="authSubmit" data-i18n="auth.login">Accedi</button>
-        <button type="button" class="ghost-btn" id="authRetry" data-i18n="auth.retry" hidden>Riprova</button>
+        <div class="field auth-flow-field">
+          <label class="auth-flow-sr-only" for="authPassword" data-i18n="auth.password">Password</label>
+          <div class="auth-password-row auth-flow-input-wrap">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path><path d="M12 14v2"></path></svg>
+            <input type="password" id="authPassword" autocomplete="current-password" data-i18n-placeholder="auth.password" placeholder="Password" required>
+            <button type="button" class="auth-show-btn auth-flow-peek" id="btnAuthShow" aria-pressed="false" title="Mostra password" aria-label="Mostra password">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.4-5.5 9.5-5.5S21.5 12 21.5 12s-3.4 5.5-9.5 5.5S2.5 12 2.5 12z"></path><circle cx="12" cy="12" r="2.5"></circle></svg>
+            </button>
+          </div>
+        </div>
+        <div class="auth-error auth-flow-error" id="authError" role="alert" aria-live="assertive" hidden></div>
+        <div class="auth-notice auth-flow-notice" id="authNotice" role="status" hidden></div>
+        <button type="submit" class="auth-submit auth-flow-submit" id="authSubmit">
+          <span class="auth-flow-submit-label" id="authSubmitLabel" data-i18n="auth.login">Accedi</span>
+          <svg class="auth-flow-submit-arrow" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13"></path><path d="m13 6 6 6-6 6"></path></svg>
+          <span class="drip" aria-hidden="true"></span>
+          <span class="auth-flow-spinner" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="ghost-btn auth-flow-retry" id="authRetry" data-i18n="auth.retry" hidden>Riprova</button>
       </form>
+      <div class="auth-flow-version" id="authVersionBadge" aria-live="polite" hidden></div>
     </div>
   </div>
 
@@ -1135,11 +1165,11 @@
   </div>
 
   <link rel="stylesheet" href="vendor/xterm.css">
-  <script src="i18n.js?v=22"></script>
+  <script src="i18n.js?v=23"></script>
   <script src="vendor/xterm.js"></script>
   <script src="vendor/xterm-addon-fit.js"></script>
   <script src="health-core.js?v=1"></script>
-  <script src="app.js?v=31"></script>
+  <script src="app.js?v=32"></script>
   <script src="vnc-console.js?v=3"></script>
 </body>
 </html>
