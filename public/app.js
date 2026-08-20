@@ -567,9 +567,6 @@ function applyLanguage() {
   $('btnDrawerInfo').querySelector('span').textContent = t('info.text');
   $('btnDrawerLogout').querySelector('span').textContent = t('auth.logout');
   updateSessionUser();
-  document.querySelectorAll('.drawer-item[data-view]').forEach((b) => {
-    if (b.dataset.i18n) b.querySelector('span').textContent = t(b.dataset.i18n + '.text');
-  });
   $('settingsModal').querySelector('.modal-head h2').textContent = t('settings.title');
   $('serverModalTitle').textContent = state.editingServerId ? t('server.edit.title') : t('server.add.title');
   $('btnSubmitServer').textContent = state.editingServerId ? t('server.save.btn') : t('server.add.btn');
@@ -608,6 +605,261 @@ function applyLanguage() {
 
 let currentView = 'dashboard';
 
+/* ---------- dock MENISCUS ----------
+   Il dock non possiede uno stato di navigazione: riceve esclusivamente
+   currentView da switchView(). Il suo stato locale e' solo geometrico. */
+const MENISCUS_GEOMETRY = Object.freeze({
+  beadRadius: 26,
+  socketRadius: 16,
+  socketDepth: 25,
+  socketInset: 7,
+  shoulderWidth: 16,
+  minShoulderWidth: 8,
+  shoulderTangent: 7,
+  edgeRadius: 20,
+  plateTop: 32,
+  minSocketReach: 12,
+  maxSocketReach: 41,
+  maxLean: 0.11,
+  speedForFullLean: 1600,
+  stiffness: 420,
+  damping: 40,
+  maxVelocity: 2200,
+  stopDistance: 0.15,
+  stopVelocity: 3,
+  maxDelta: 0.032,
+});
+
+const meniscusMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+const meniscusState = {
+  dock: null,
+  skin: null,
+  path: null,
+  bead: null,
+  items: [],
+  centers: new Map(),
+  width: 0,
+  height: 0,
+  x: 0,
+  targetX: 0,
+  velocity: 0,
+  rafId: 0,
+  lastTime: 0,
+  initialized: false,
+  resizeObserver: null,
+};
+
+function clampMeniscus(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function meniscusNumber(value) {
+  return Number(value.toFixed(3));
+}
+
+function renderMeniscus() {
+  const state = meniscusState;
+  const g = MENISCUS_GEOMETRY;
+  if (!state.path || !state.bead || state.width <= 0 || state.height <= 0) return;
+
+  const width = state.width;
+  const height = state.height;
+  const edge = Math.min(g.edgeRadius, Math.max(10, width / 5), Math.max(10, height / 3));
+  const top = Math.min(g.plateTop, height - edge - 18);
+  const beadX = clampMeniscus(state.x, g.beadRadius + 2, width - g.beadRadius - 2);
+  const normalizedVelocity = Math.abs(state.velocity) < g.stopVelocity
+    ? 0
+    : clampMeniscus(state.velocity / g.speedForFullLean, -1, 1);
+  const speed = Math.abs(normalizedVelocity);
+  const leftScale = clampMeniscus(1 + 0.035 * speed + g.maxLean * normalizedVelocity, 0.88, 1.16);
+  const rightScale = clampMeniscus(1 + 0.035 * speed - g.maxLean * normalizedVelocity, 0.88, 1.16);
+  let leftShoulder = g.shoulderWidth * leftScale;
+  let rightShoulder = g.shoulderWidth * rightScale;
+
+  /* La formula determina la base del socket dalla tangenza bead/bowl.
+     Il reach e' poi limitato dallo spazio reale alle estremita' del dock. */
+  const beadLift = Math.max(1, top - g.beadRadius);
+  const reachSquared = (g.socketRadius + g.beadRadius) ** 2 - (g.socketRadius - beadLift) ** 2;
+  const nominalReach = clampMeniscus(Math.sqrt(Math.max(0, reachSquared)), g.minSocketReach, g.maxSocketReach);
+  const leftRoom = Math.max(0, beadX - edge);
+  const rightRoom = Math.max(0, width - edge - beadX);
+  const reach = Math.max(g.minSocketReach, Math.min(
+    nominalReach,
+    leftRoom - leftShoulder,
+    rightRoom - rightShoulder,
+  ));
+  leftShoulder = Math.max(g.minShoulderWidth, Math.min(leftShoulder, leftRoom - reach));
+  rightShoulder = Math.max(g.minShoulderWidth, Math.min(rightShoulder, rightRoom - reach));
+
+  const leftSocket = beadX - reach;
+  const rightSocket = beadX + reach;
+  const leftStart = leftSocket - leftShoulder;
+  const rightEnd = rightSocket + rightShoulder;
+  const socketY = top + g.socketInset;
+  const shoulderTangent = Math.min(g.shoulderTangent, socketY - top);
+  const bowlControl = Math.min(g.socketDepth / 0.75, height - edge - socketY);
+  const n = meniscusNumber;
+  const d = [
+    `M ${n(edge)} ${n(top)}`,
+    `H ${n(leftStart)}`,
+    `C ${n(leftStart + leftShoulder * 0.58)} ${n(top)} ${n(leftSocket)} ${n(socketY - shoulderTangent)} ${n(leftSocket)} ${n(socketY)}`,
+    `C ${n(leftSocket)} ${n(socketY + bowlControl)} ${n(rightSocket)} ${n(socketY + bowlControl)} ${n(rightSocket)} ${n(socketY)}`,
+    `C ${n(rightSocket)} ${n(socketY - shoulderTangent)} ${n(rightEnd - rightShoulder * 0.58)} ${n(top)} ${n(rightEnd)} ${n(top)}`,
+    `H ${n(width - edge)}`,
+    `Q ${n(width)} ${n(top)} ${n(width)} ${n(top + edge)}`,
+    `V ${n(height - edge)}`,
+    `Q ${n(width)} ${n(height)} ${n(width - edge)} ${n(height)}`,
+    `H ${n(edge)}`,
+    `Q 0 ${n(height)} 0 ${n(height - edge)}`,
+    `V ${n(top + edge)}`,
+    `Q 0 ${n(top)} ${n(edge)} ${n(top)}`,
+    'Z',
+  ].join(' ');
+
+  state.skin.setAttribute('viewBox', `0 0 ${n(width)} ${n(height)}`);
+  state.path.setAttribute('d', d);
+  state.bead.style.transform = `translate3d(${n(beadX - g.beadRadius)}px, 0, 0)`;
+}
+
+function cancelMeniscusAnimation() {
+  if (meniscusState.rafId) cancelAnimationFrame(meniscusState.rafId);
+  meniscusState.rafId = 0;
+  meniscusState.lastTime = 0;
+}
+
+function settleMeniscus() {
+  cancelMeniscusAnimation();
+  meniscusState.x = meniscusState.targetX;
+  meniscusState.velocity = 0;
+  renderMeniscus();
+}
+
+function runMeniscusFrame(time) {
+  const state = meniscusState;
+  state.rafId = 0;
+  if (meniscusMotionQuery.matches || document.hidden) {
+    settleMeniscus();
+    return;
+  }
+
+  const delta = state.lastTime
+    ? Math.min((time - state.lastTime) / 1000, MENISCUS_GEOMETRY.maxDelta)
+    : 1 / 60;
+  state.lastTime = time;
+  const acceleration = MENISCUS_GEOMETRY.stiffness * (state.targetX - state.x)
+    - MENISCUS_GEOMETRY.damping * state.velocity;
+  state.velocity = clampMeniscus(
+    state.velocity + acceleration * delta,
+    -MENISCUS_GEOMETRY.maxVelocity,
+    MENISCUS_GEOMETRY.maxVelocity,
+  );
+  state.x += state.velocity * delta;
+  renderMeniscus();
+
+  if (Math.abs(state.targetX - state.x) <= MENISCUS_GEOMETRY.stopDistance
+    && Math.abs(state.velocity) <= MENISCUS_GEOMETRY.stopVelocity) {
+    settleMeniscus();
+    return;
+  }
+  state.rafId = requestAnimationFrame(runMeniscusFrame);
+}
+
+function startMeniscusAnimation() {
+  if (meniscusState.rafId || meniscusMotionQuery.matches) return;
+  meniscusState.lastTime = 0;
+  meniscusState.rafId = requestAnimationFrame(runMeniscusFrame);
+}
+
+function measureMeniscus() {
+  const state = meniscusState;
+  if (!state.dock) return false;
+  const dockRect = state.dock.getBoundingClientRect();
+  if (dockRect.width <= 0 || dockRect.height <= 0) return false;
+
+  const previousWidth = state.width;
+  state.width = dockRect.width;
+  state.height = dockRect.height;
+  state.centers.clear();
+  state.items.forEach((item) => {
+    const rect = item.getBoundingClientRect();
+    state.centers.set(item.dataset.view, rect.left - dockRect.left + rect.width / 2);
+  });
+  const target = state.centers.get(currentView);
+  if (typeof target !== 'number') return false;
+
+  if (!state.initialized) {
+    state.initialized = true;
+    state.x = target;
+    state.targetX = target;
+    state.velocity = 0;
+  } else {
+    if (previousWidth > 0 && state.rafId) state.x *= state.width / previousWidth;
+    state.targetX = target;
+    if (!state.rafId) {
+      state.x = target;
+      state.velocity = 0;
+    }
+  }
+  renderMeniscus();
+  return true;
+}
+
+function syncMeniscusView(view, { immediate = false } = {}) {
+  const state = meniscusState;
+  state.items.forEach((item) => {
+    const active = item.dataset.view === view;
+    item.classList.toggle('active', active);
+    if (active) item.setAttribute('aria-current', 'page');
+    else item.removeAttribute('aria-current');
+  });
+  if (!state.dock) return;
+
+  const noMotion = immediate || meniscusMotionQuery.matches;
+  state.dock.classList.toggle('meniscus-motion-off', noMotion);
+  if (!state.centers.has(view) && !measureMeniscus()) return;
+  const target = state.centers.get(view);
+  if (typeof target !== 'number') return;
+  state.targetX = target;
+
+  if (noMotion || Math.abs(state.targetX - state.x) <= MENISCUS_GEOMETRY.stopDistance) {
+    settleMeniscus();
+    return;
+  }
+  startMeniscusAnimation();
+}
+
+function initMeniscus() {
+  const state = meniscusState;
+  state.dock = $('meniscusDock');
+  state.skin = $('meniscusSkin');
+  state.path = $('meniscusSkinFill');
+  state.bead = $('meniscusBead');
+  state.items = Array.from(document.querySelectorAll('.meniscus-item'));
+  if (!state.dock || !state.skin || !state.path || !state.bead || !state.items.length) return;
+
+  state.items.forEach((item) => {
+    item.addEventListener('click', (event) => {
+      /* detail=0 copre tastiera e click programmatici: nessun moto superfluo. */
+      switchView(item.dataset.view, { immediateMeniscus: event.detail === 0 });
+    });
+  });
+  state.resizeObserver = new ResizeObserver(measureMeniscus);
+  state.resizeObserver.observe(state.dock);
+  measureMeniscus();
+  syncMeniscusView(currentView, { immediate: true });
+
+  meniscusMotionQuery.addEventListener('change', () => {
+    if (meniscusMotionQuery.matches) settleMeniscus();
+    else measureMeniscus();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) settleMeniscus();
+    else measureMeniscus();
+  });
+  window.addEventListener('pagehide', cancelMeniscusAnimation);
+  window.addEventListener('pageshow', measureMeniscus);
+}
+
 /* animazione di entrata condivisa per viste e tab.
    la classe viene aggiunta in modo sincrono, nello stesso ciclo in cui la
    sezione e' stata resa visibile: il primo frame dipinto e' gia' animato
@@ -639,7 +891,7 @@ function playEnter(el, cls) {
   el.addEventListener('animationcancel', el._enterDone);
 }
 
-function switchView(view) {
+function switchView(view, { immediateMeniscus = false } = {}) {
   currentView = view;
   if (view !== 'backup') backupFocusGuest = null; /* reset focus deep-link navigando altrove */
   /* pulizia transizioni residue prima del cambio vista: copre anche il caso
@@ -651,12 +903,7 @@ function switchView(view) {
   cancelEnter($('healthSection'));
   cancelEnter($('backupSection'));
   document.querySelectorAll('#logsFilters, #logsTableWrap, .logs-pagination').forEach(cancelEnter);
-  document.querySelectorAll('.nav-btn').forEach((b) => {
-    b.classList.toggle('active', b.dataset.view === view);
-  });
-  document.querySelectorAll('.drawer-item[data-view]').forEach((b) => {
-    b.classList.toggle('active', b.dataset.view === view);
-  });
+  syncMeniscusView(view, { immediate: immediateMeniscus });
   $('serversSection').hidden = view !== 'dashboard';
   $('logsSection').hidden = view !== 'logs';
   $('healthSection').hidden = view !== 'health';
@@ -679,32 +926,56 @@ function switchView(view) {
   }
 }
 
-document.querySelectorAll('.nav-btn').forEach((b) => {
-  b.onclick = () => switchView(b.dataset.view);
-});
-document.querySelectorAll('.drawer-item[data-view]').forEach((b) => {
-  b.onclick = () => switchView(b.dataset.view);
-});
+initMeniscus();
 
 /* ---------- drawer mobile ---------- */
 
+let drawerFocusReturn = null;
+let drawerCloseTimer = null;
+
 function openDrawer() {
+  if (drawerCloseTimer) {
+    clearTimeout(drawerCloseTimer);
+    drawerCloseTimer = null;
+  }
+  drawerFocusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   $('drawerBackdrop').hidden = false;
+  $('drawer').removeAttribute('inert');
   $('drawer').classList.add('open');
   $('drawer').setAttribute('aria-hidden', 'false');
-  requestAnimationFrame(() => $('drawerBackdrop').classList.add('open'));
+  $('btnHamburger').setAttribute('aria-expanded', 'true');
+  requestAnimationFrame(() => {
+    $('drawerBackdrop').classList.add('open');
+    $('btnDrawerClose').focus();
+  });
 }
 
-function closeDrawer() {
+function closeDrawer({ restoreFocus = false } = {}) {
+  if (drawerCloseTimer) clearTimeout(drawerCloseTimer);
   $('drawer').classList.remove('open');
   $('drawerBackdrop').classList.remove('open');
   $('drawer').setAttribute('aria-hidden', 'true');
-  setTimeout(() => { $('drawerBackdrop').hidden = true; }, 300);
+  $('btnHamburger').setAttribute('aria-expanded', 'false');
+  drawerCloseTimer = setTimeout(() => {
+    if (!$('drawer').classList.contains('open')) {
+      $('drawerBackdrop').hidden = true;
+      $('drawer').setAttribute('inert', '');
+    }
+    drawerCloseTimer = null;
+  }, 300);
+  if (restoreFocus && drawerFocusReturn && drawerFocusReturn.isConnected) drawerFocusReturn.focus();
+  drawerFocusReturn = null;
 }
 
 $('btnHamburger').onclick = openDrawer;
-$('btnDrawerClose').onclick = closeDrawer;
-$('drawerBackdrop').onclick = closeDrawer;
+$('btnDrawerClose').onclick = () => closeDrawer({ restoreFocus: true });
+$('drawerBackdrop').onclick = () => closeDrawer({ restoreFocus: true });
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && $('drawer').classList.contains('open')) {
+    event.preventDefault();
+    closeDrawer({ restoreFocus: true });
+  }
+});
 $('btnDrawerSettings').onclick = () => {
   closeDrawer();
   document.querySelectorAll('.drawer-item').forEach((b) => b.classList.remove('active'));
