@@ -6,6 +6,34 @@ Git resta la fonte completa dello storico; docs/ARCHITECTURE.md resta la fonte
 tecnica di dettaglio. Gli hash dei commit citati si riferiscono allo storico
 privato precedente alla pubblicazione open source.
 
+## 1.3.2 - 2026-08-20
+
+Status: **Stable**
+
+### Modificate
+
+- schermata di login completamente ridisegnata con Flow UI dark;
+- nuova card glassmorphism con ambient glow blu/ciano;
+- metaballs SVG animate sopra la card;
+- animazioni leggere di ingresso e reveal della form;
+- nuovo stato loading con melting/drip sul pulsante Accedi;
+- login responsive su desktop e mobile;
+- supporto `prefers-reduced-motion`;
+- focus e accessibilità migliorati;
+- gestione autofill e password manager preservata;
+- login sempre dark, indipendentemente dal tema della dashboard;
+- PWA aggiornata a `nodepilot-v13`;
+- asset aggiornati: `style.css?v=23`, `i18n.js?v=23`, `app.js?v=32`.
+
+### Sicurezza
+
+- autenticazione backend invariata;
+- endpoint `/api/auth/login` invariato;
+- sessioni, cookie e rate limit invariati;
+- nessuna password o credenziale salvata nel nuovo frontend;
+- CSP invariata;
+- nessuna nuova dipendenza.
+
 ## 1.3.1 - 2026-08-17
 
 Status: **Stable**
