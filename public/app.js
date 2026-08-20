@@ -605,429 +605,24 @@ function applyLanguage() {
 
 let currentView = 'dashboard';
 
-/* ---------- dock MENISCUS ----------
-   Il dock non possiede uno stato di navigazione: riceve esclusivamente
-   currentView da switchView(). Il suo stato locale e' solo geometrico. */
-const MENISCUS_GEOMETRY = Object.freeze({
-  beadRadius: 17,
-  beadTop: -7,
-  beadHitRadius: 22,
-  socketRadius: 14,
-  socketDepth: 22,
-  socketInset: 6,
-  shoulderWidth: 15,
-  minShoulderWidth: 10,
-  shoulderTangent: 6,
-  edgeRadius: 20,
-  plateTop: 24,
-  minSocketReach: 10,
-  maxSocketReach: 34,
-  maxLean: 0.055,
-  speedForFullLean: 1400,
-  motionDuration: 180,
-  motionMaxVelocity: 3000,
-  stopDistance: 0.15,
-  stopVelocity: 3,
-  maxDelta: 0.032,
-  dragThreshold: 7,
-  dragMaxVelocity: 1600,
-});
+/* ---------- navigazione primaria ---------- */
 
-const meniscusMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-const meniscusState = {
-  dock: null,
-  skin: null,
-  path: null,
-  bead: null,
-  beadHit: null,
-  items: [],
-  centers: new Map(),
-  dockLeft: 0,
-  width: 0,
-  height: 0,
-  x: 0,
-  targetX: 0,
-  velocity: 0,
-  animationStartX: 0,
-  animationElapsed: 0,
-  rafId: 0,
-  lastTime: 0,
-  initialized: false,
-  controllerInitialized: false,
-  drag: null,
-  resizeObserver: null,
-};
-
-function clampMeniscus(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function meniscusNumber(value) {
-  return Number(value.toFixed(3));
-}
-
-function renderMeniscus() {
-  const state = meniscusState;
-  const g = MENISCUS_GEOMETRY;
-  if (!state.path || !state.bead || state.width <= 0 || state.height <= 0) return;
-
-  const width = state.width;
-  const height = state.height;
-  const edge = Math.min(g.edgeRadius, Math.max(10, width / 5), Math.max(10, height / 3));
-  const top = Math.min(g.plateTop, height - edge - 18);
-  const minBeadX = Math.max(g.beadRadius + 2, edge + g.minSocketReach + g.minShoulderWidth);
-  const maxBeadX = Math.min(width - g.beadRadius - 2, width - edge - g.minSocketReach - g.minShoulderWidth);
-  const beadX = clampMeniscus(state.x, minBeadX, maxBeadX);
-  const normalizedVelocity = Math.abs(state.velocity) < g.stopVelocity
-    ? 0
-    : clampMeniscus(state.velocity / g.speedForFullLean, -1, 1);
-  const speed = Math.abs(normalizedVelocity);
-  const leftScale = clampMeniscus(1 + 0.018 * speed + g.maxLean * normalizedVelocity, 0.94, 1.08);
-  const rightScale = clampMeniscus(1 + 0.018 * speed - g.maxLean * normalizedVelocity, 0.94, 1.08);
-  let leftShoulder = g.shoulderWidth * leftScale;
-  let rightShoulder = g.shoulderWidth * rightScale;
-
-  /* La formula determina la base del socket dalla tangenza bead/bowl.
-     Il reach e' poi limitato dallo spazio reale alle estremita' del dock. */
-  const beadLift = Math.max(1, top - (g.beadTop + g.beadRadius));
-  const reachSquared = (g.socketRadius + g.beadRadius) ** 2 - (g.socketRadius - beadLift) ** 2;
-  const nominalReach = clampMeniscus(Math.sqrt(Math.max(0, reachSquared)), g.minSocketReach, g.maxSocketReach);
-  const leftRoom = Math.max(0, beadX - edge);
-  const rightRoom = Math.max(0, width - edge - beadX);
-  const reach = Math.max(0, Math.min(
-    nominalReach,
-    leftRoom - g.minShoulderWidth,
-    rightRoom - g.minShoulderWidth,
-  ));
-  leftShoulder = clampMeniscus(leftShoulder, g.minShoulderWidth, leftRoom - reach);
-  rightShoulder = clampMeniscus(rightShoulder, g.minShoulderWidth, rightRoom - reach);
-
-  const leftSocket = beadX - reach;
-  const rightSocket = beadX + reach;
-  const leftStart = leftSocket - leftShoulder;
-  const rightEnd = rightSocket + rightShoulder;
-  const socketY = top + g.socketInset;
-  const shoulderTangent = Math.min(g.shoulderTangent, socketY - top);
-  const bowlControl = Math.min(g.socketDepth / 0.75, height - edge - socketY);
-  const n = meniscusNumber;
-  const d = [
-    `M ${n(edge)} ${n(top)}`,
-    `H ${n(leftStart)}`,
-    `C ${n(leftStart + leftShoulder * 0.58)} ${n(top)} ${n(leftSocket)} ${n(socketY - shoulderTangent)} ${n(leftSocket)} ${n(socketY)}`,
-    `C ${n(leftSocket)} ${n(socketY + bowlControl)} ${n(rightSocket)} ${n(socketY + bowlControl)} ${n(rightSocket)} ${n(socketY)}`,
-    `C ${n(rightSocket)} ${n(socketY - shoulderTangent)} ${n(rightEnd - rightShoulder * 0.58)} ${n(top)} ${n(rightEnd)} ${n(top)}`,
-    `H ${n(width - edge)}`,
-    `Q ${n(width)} ${n(top)} ${n(width)} ${n(top + edge)}`,
-    `V ${n(height - edge)}`,
-    `Q ${n(width)} ${n(height)} ${n(width - edge)} ${n(height)}`,
-    `H ${n(edge)}`,
-    `Q 0 ${n(height)} 0 ${n(height - edge)}`,
-    `V ${n(top + edge)}`,
-    `Q 0 ${n(top)} ${n(edge)} ${n(top)}`,
-    'Z',
-  ].join(' ');
-
-  state.skin.setAttribute('viewBox', `0 0 ${n(width)} ${n(height)}`);
-  state.path.setAttribute('d', d);
-  state.bead.style.transform = `translate3d(${n(beadX - g.beadRadius)}px, 0, 0)`;
-  if (state.beadHit) state.beadHit.style.transform = `translate3d(${n(beadX - g.beadHitRadius)}px, 0, 0)`;
-}
-
-function cancelMeniscusAnimation() {
-  if (meniscusState.rafId) cancelAnimationFrame(meniscusState.rafId);
-  meniscusState.rafId = 0;
-  meniscusState.lastTime = 0;
-  meniscusState.animationElapsed = 0;
-}
-
-function settleMeniscus() {
-  cancelMeniscusAnimation();
-  meniscusState.x = meniscusState.targetX;
-  meniscusState.velocity = 0;
-  renderMeniscus();
-}
-
-function runMeniscusFrame(time) {
-  const state = meniscusState;
-  state.rafId = 0;
-  if (meniscusMotionQuery.matches || document.hidden) {
-    settleMeniscus();
-    return;
-  }
-
-  const delta = state.lastTime
-    ? Math.min((time - state.lastTime) / 1000, MENISCUS_GEOMETRY.maxDelta)
-    : 1 / 60;
-  state.lastTime = time;
-  const previousX = state.x;
-  state.animationElapsed = Math.min(
-    state.animationElapsed + delta * 1000,
-    MENISCUS_GEOMETRY.motionDuration,
-  );
-  const progress = state.animationElapsed / MENISCUS_GEOMETRY.motionDuration;
-  const eased = 1 - (1 - progress) ** 4;
-  state.x = state.animationStartX + (state.targetX - state.animationStartX) * eased;
-  state.velocity = clampMeniscus(
-    (state.x - previousX) / delta,
-    -MENISCUS_GEOMETRY.motionMaxVelocity,
-    MENISCUS_GEOMETRY.motionMaxVelocity,
-  );
-  renderMeniscus();
-
-  if (progress >= 1 || (Math.abs(state.targetX - state.x) <= MENISCUS_GEOMETRY.stopDistance
-    && Math.abs(state.velocity) <= MENISCUS_GEOMETRY.stopVelocity)) {
-    settleMeniscus();
-    return;
-  }
-  state.rafId = requestAnimationFrame(runMeniscusFrame);
-}
-
-function startMeniscusAnimation() {
-  if (meniscusState.rafId || meniscusMotionQuery.matches) return;
-  meniscusState.lastTime = 0;
-  meniscusState.rafId = requestAnimationFrame(runMeniscusFrame);
-}
-
-function getMeniscusDragBounds() {
-  const centers = Array.from(meniscusState.centers.values());
-  if (!centers.length) return { min: meniscusState.x, max: meniscusState.x };
-  return { min: Math.min(...centers), max: Math.max(...centers) };
-}
-
-function findNearestMeniscusView(x) {
-  let nearestView = null;
-  let nearestDistance = Infinity;
-  meniscusState.centers.forEach((center, view) => {
-    const distance = Math.abs(center - x);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearestView = view;
-    }
-  });
-  return nearestView;
-}
-
-function setMeniscusDragCandidate(view) {
-  meniscusState.items.forEach((item) => {
-    item.classList.toggle('drag-candidate', item.dataset.view === view && item.dataset.view !== currentView);
-  });
-}
-
-function clearMeniscusDragCandidate() {
-  meniscusState.items.forEach((item) => item.classList.remove('drag-candidate'));
-}
-
-function meniscusPointerPosition(clientX, pointerOffsetX) {
-  const bounds = getMeniscusDragBounds();
-  return clampMeniscus(clientX - meniscusState.dockLeft - pointerOffsetX, bounds.min, bounds.max);
-}
-
-function clearMeniscusDrag({ releasePointer = false } = {}) {
-  const state = meniscusState;
-  const drag = state.drag;
-  state.drag = null;
-  state.dock?.classList.remove('meniscus-dragging');
-  clearMeniscusDragCandidate();
-  if (releasePointer && drag && state.beadHit?.hasPointerCapture?.(drag.pointerId)) {
-    state.beadHit.releasePointerCapture(drag.pointerId);
-  }
-}
-
-function handleMeniscusPointerDown(event) {
-  const state = meniscusState;
-  if (!event.isPrimary || state.drag || (event.pointerType === 'mouse' && event.button !== 0)) return;
-  if ((!state.width || !state.centers.size) && !measureMeniscus()) return;
-
-  cancelMeniscusAnimation();
-  clearMeniscusDragCandidate();
-  state.drag = {
-    pointerId: event.pointerId,
-    startClientX: event.clientX,
-    startClientY: event.clientY,
-    startX: state.x,
-    pointerOffsetX: event.clientX - (state.dockLeft + state.x),
-    lastClientX: event.clientX,
-    lastTime: performance.now(),
-    dragging: false,
-    verticalIntent: false,
-    candidateView: null,
-  };
-  try { state.beadHit.setPointerCapture(event.pointerId); } catch { /* il browser puo' aver gia' annullato il puntatore */ }
-}
-
-function handleMeniscusPointerMove(event) {
-  const state = meniscusState;
-  const drag = state.drag;
-  if (!drag || event.pointerId !== drag.pointerId) return;
-
-  const deltaX = event.clientX - drag.startClientX;
-  const deltaY = event.clientY - drag.startClientY;
-  drag.lastClientX = event.clientX;
-  if (!drag.dragging) {
-    if (Math.abs(deltaX) < MENISCUS_GEOMETRY.dragThreshold) return;
-    if (Math.abs(deltaY) > Math.abs(deltaX)) {
-      drag.verticalIntent = true;
-      return;
-    }
-    if (drag.verticalIntent) return;
-    drag.dragging = true;
-    state.dock.classList.add('meniscus-dragging');
-  }
-  if (drag.verticalIntent) return;
-
-  const nextX = meniscusPointerPosition(event.clientX, drag.pointerOffsetX);
-  const now = performance.now();
-  const delta = Math.max(0.001, Math.min((now - drag.lastTime) / 1000, MENISCUS_GEOMETRY.maxDelta));
-  state.velocity = clampMeniscus(
-    (nextX - state.x) / delta,
-    -MENISCUS_GEOMETRY.dragMaxVelocity,
-    MENISCUS_GEOMETRY.dragMaxVelocity,
-  );
-  state.x = nextX;
-  drag.lastTime = now;
-  drag.candidateView = findNearestMeniscusView(nextX);
-  setMeniscusDragCandidate(drag.candidateView);
-  renderMeniscus();
-}
-
-function handleMeniscusPointerUp(event) {
-  const state = meniscusState;
-  const drag = state.drag;
-  if (!drag || event.pointerId !== drag.pointerId) return;
-
-  const targetView = drag.dragging ? (drag.candidateView || findNearestMeniscusView(state.x)) : null;
-  clearMeniscusDrag({ releasePointer: true });
-  if (!targetView || targetView === currentView) {
-    syncMeniscusView(currentView);
-    return;
-  }
-  /* La vista cambia soltanto qui: switchView mantiene l'unica source of truth. */
-  switchView(targetView);
-}
-
-function handleMeniscusPointerCancel(event) {
-  const drag = meniscusState.drag;
-  if (!drag || (event && event.pointerId !== drag.pointerId)) return;
-  clearMeniscusDrag({ releasePointer: true });
-  syncMeniscusView(currentView);
-}
-
-function measureMeniscus() {
-  const state = meniscusState;
-  if (!state.dock) return false;
-  const dockRect = state.dock.getBoundingClientRect();
-  if (dockRect.width <= 0 || dockRect.height <= 0) return false;
-
-  const previousWidth = state.width;
-  state.width = dockRect.width;
-  state.height = dockRect.height;
-  state.dockLeft = dockRect.left;
-  state.centers.clear();
-  state.items.forEach((item) => {
-    const rect = item.getBoundingClientRect();
-    state.centers.set(item.dataset.view, rect.left - dockRect.left + rect.width / 2);
-  });
-  const target = state.centers.get(currentView);
-  if (typeof target !== 'number') return false;
-
-  if (!state.initialized) {
-    state.initialized = true;
-    state.x = target;
-    state.targetX = target;
-    state.velocity = 0;
-  } else {
-    if (state.drag?.dragging) {
-      state.x = meniscusPointerPosition(state.drag.lastClientX, state.drag.pointerOffsetX);
-      state.velocity = 0;
-    } else if (previousWidth > 0 && state.rafId) {
-      state.x *= state.width / previousWidth;
-      state.animationStartX *= state.width / previousWidth;
-    }
-    state.targetX = target;
-    if (!state.rafId && !state.drag?.dragging) {
-      state.x = target;
-      state.velocity = 0;
-    }
-  }
-  renderMeniscus();
-  return true;
-}
-
-function syncMeniscusView(view, { immediate = false } = {}) {
-  const state = meniscusState;
-  clearMeniscusDragCandidate();
-  state.items.forEach((item) => {
+function syncPrimaryNavView(view) {
+  document.querySelectorAll('.primary-nav-item').forEach((item) => {
     const active = item.dataset.view === view;
     item.classList.toggle('active', active);
     if (active) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   });
-  if (!state.dock) return;
-
-  const noMotion = immediate || meniscusMotionQuery.matches;
-  state.dock.classList.toggle('meniscus-motion-off', noMotion);
-  if (!state.centers.has(view) && !measureMeniscus()) return;
-  const target = state.centers.get(view);
-  if (typeof target !== 'number') return;
-  state.targetX = target;
-
-  if (noMotion || Math.abs(state.targetX - state.x) <= MENISCUS_GEOMETRY.stopDistance) {
-    settleMeniscus();
-    return;
-  }
-  state.animationStartX = state.x;
-  state.animationElapsed = 0;
-  startMeniscusAnimation();
 }
 
-function initMeniscus() {
-  const state = meniscusState;
-  if (state.controllerInitialized) return;
-  state.dock = $('meniscusDock');
-  state.skin = $('meniscusSkin');
-  state.path = $('meniscusSkinFill');
-  state.bead = $('meniscusBead');
-  state.beadHit = $('meniscusBeadHit');
-  state.items = Array.from(document.querySelectorAll('.meniscus-item'));
-  if (!state.dock || !state.skin || !state.path || !state.bead || !state.beadHit || !state.items.length) return;
-
-  state.items.forEach((item) => {
-    item.addEventListener('click', (event) => {
-      /* detail=0 copre tastiera e click programmatici: nessun moto superfluo. */
-      switchView(item.dataset.view, { immediateMeniscus: event.detail === 0 });
-    });
+function initPrimaryNav() {
+  const items = document.querySelectorAll('.primary-nav-item');
+  if (!items.length) return;
+  items.forEach((item) => {
+    item.addEventListener('click', () => switchView(item.dataset.view));
   });
-  state.beadHit.addEventListener('pointerdown', handleMeniscusPointerDown);
-  state.beadHit.addEventListener('pointermove', handleMeniscusPointerMove);
-  state.beadHit.addEventListener('pointerup', handleMeniscusPointerUp);
-  state.beadHit.addEventListener('pointercancel', handleMeniscusPointerCancel);
-  state.beadHit.addEventListener('lostpointercapture', handleMeniscusPointerCancel);
-  state.resizeObserver = new ResizeObserver(measureMeniscus);
-  state.resizeObserver.observe(state.dock);
-  measureMeniscus();
-  syncMeniscusView(currentView, { immediate: true });
-
-  meniscusMotionQuery.addEventListener('change', () => {
-    if (meniscusMotionQuery.matches) {
-      clearMeniscusDrag({ releasePointer: true });
-      settleMeniscus();
-    }
-    else measureMeniscus();
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      clearMeniscusDrag({ releasePointer: true });
-      settleMeniscus();
-    }
-    else measureMeniscus();
-  });
-  window.addEventListener('resize', measureMeniscus, { passive: true });
-  window.addEventListener('pagehide', () => {
-    clearMeniscusDrag({ releasePointer: true });
-    cancelMeniscusAnimation();
-  });
-  window.addEventListener('pageshow', measureMeniscus);
-  state.controllerInitialized = true;
+  syncPrimaryNavView(currentView);
 }
 
 /* animazione di entrata condivisa per viste e tab.
@@ -1061,7 +656,7 @@ function playEnter(el, cls) {
   el.addEventListener('animationcancel', el._enterDone);
 }
 
-function switchView(view, { immediateMeniscus = false } = {}) {
+function switchView(view) {
   currentView = view;
   if (view !== 'backup') backupFocusGuest = null; /* reset focus deep-link navigando altrove */
   /* pulizia transizioni residue prima del cambio vista: copre anche il caso
@@ -1073,7 +668,7 @@ function switchView(view, { immediateMeniscus = false } = {}) {
   cancelEnter($('healthSection'));
   cancelEnter($('backupSection'));
   document.querySelectorAll('#logsFilters, #logsTableWrap, .logs-pagination').forEach(cancelEnter);
-  syncMeniscusView(view, { immediate: immediateMeniscus });
+  syncPrimaryNavView(view);
   $('serversSection').hidden = view !== 'dashboard';
   $('logsSection').hidden = view !== 'logs';
   $('healthSection').hidden = view !== 'health';
@@ -1096,7 +691,7 @@ function switchView(view, { immediateMeniscus = false } = {}) {
   }
 }
 
-initMeniscus();
+initPrimaryNav();
 
 /* ---------- drawer mobile ---------- */
 
